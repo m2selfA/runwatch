@@ -324,7 +324,9 @@ session locator 只读取 rollout 第一条 `session_meta`，要求 `payload.id 
 
 R9b 已实现可靠的 **offline** Codex driver：daemon 为 `agent_kind=codex` 独立 reserve session lease，然后以 native `codex.exe exec resume --json <thread_id> <bounded completion>` 恢复持久 thread。completion 带 deterministic `delivery_id` marker；stdout 采用 bounded JSONL parser，只有 exact `thread.started.thread_id` + `turn.started` + `turn.completed` + process exit 0 且无 failure/error/malformed event 才能把 Delivery 标为 delivered。缺失/替换 thread identity 直接 `needs_rebind`；普通 agent/provider 失败走 retry。单条超大 item 输出被 drain 后丢弃，stderr 只保留 bounded tail，避免科研输出撑爆 resident daemon。
 
-`codex queue --thread <id> --message ...` 已确认是 app-server 的 queued-turn surface，但 **queue 命令成功本身不是 continuation 完成证据**。R9c 才会把它作为可能的 live/resident fast path，并同时解决“原 Codex CLI 仍活着时禁止第二个 exact-thread owner”和“continuation 已落到 rollout、daemon 在 ack 前崩溃”的去重问题。在这些门禁完成前，不能把 queue exit 0 当作 delivered。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
+R9c 不把 `codex queue` 作为 correctness dependency，而是直接使用 Codex 0.150.1 的**持久 rollout 证据**收紧并发和 exactly-once。真实 rollout 中每个 agent turn 有 `event_msg/task_started {turn_id}`，用户输入持久为 `response_item/message role=user` 的 `input_text`，完成边界是同一 `turn_id` 的 `event_msg/task_complete`。runwatch 的 deterministic Delivery marker 正好位于该 user input，因此 daemon 重启后可区分：marker 不存在且 thread idle、marker 已持久但 turn 仍在运行、marker turn 已持久完成。
+
+spawn 前 scanner 只寻找这些结构和本 Delivery marker，不保存一般对话文本：其它 active turn -> retry；同 marker active turn -> retry 且绝不重注入；同 marker + matching task_complete -> **不启动 Codex，直接补 durable delivered ack**；重复 marker、无 turn marker 或不一致历史 -> needs_rebind。只有 rollout 已 idle 且静默至少 3 秒才允许新 `exec resume`。因此“原 Codex CLI 正在 active turn”与“Codex 已完成但 daemon 在 SQLite ack 前崩溃”两条关键竞态都被持久层封住。`codex queue` 仍可作为未来 resident app-server latency 优化，但 queue exit 0 本身永远不能等价于 Delivery success。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
 
 
 ## 安全边界

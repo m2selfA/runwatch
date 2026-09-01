@@ -482,11 +482,23 @@ Architecture and acceptance:
 - [x] Added a default-ignored native subprocess acceptance with an isolated SQLite store and native `pwsh.exe` Codex stub. It exercises real child spawn, resume argv, bounded JSONL parsing, exact-thread evidence, Delivery ack and non-re-reservation; explicit 2026-09-01 run passed **1/1**.
 - [x] R9b regression: `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **88 passed, 0 failed, 7 ignored by default**. The seventh ignored gate is the native Codex driver stub and was explicitly run green.
 
-### R9c — live concurrency + crash-window idempotency + real Codex continuation — next
+### R9c — rollout concurrency + crash-window idempotency — completed 2026-09-01
 
-- [ ] Prevent concurrent exact-thread ownership when the initiating Codex CLI is still active. `codex queue` is a possible live/resident fast path, but **queue command success alone must never mark Delivery delivered**; it needs durable rollout evidence or an equivalent ownership/settlement signal.
-- [ ] Add deterministic Delivery-id evidence/recovery so a crash after Codex persists or completes the continuation but before runwatch records success cannot inject the same scientific continuation twice.
-- [ ] Add final real Codex end-to-end acceptance: submit a short durable Run from a real Codex thread, terminate the initiating CLI, observe terminal, restore the exact thread, and continue without a human typing “continue”. R9a accepted execution/binding and R9b accepted the offline driver; this gate closes real-agent continuation.
+- [x] Inspected a real cap00 Codex 0.150.1 rollout by **record type/field names only**. Persistent turn boundaries are `event_msg/task_started { turn_id, started_at }` and `event_msg/task_complete { turn_id, ... }`; user prompts persist as `response_item/message role=user` with `content[].type=input_text`. Matching `task_started`/`task_complete` use the same `turn_id`, giving runwatch a durable settlement signal independent of `codex exec --json` stdout.
+- [x] Added a bounded rollout scanner for the exact Delivery marker `[runwatch continuation delivery_id=...]`. It streams the bound rollout, skips individual unrelated records above 1 MiB, counts malformed records, and never stores general conversation content. It classifies `Idle`, unrelated `ThreadBusy`, exact `DeliveryRunning`, exact `DeliveryCompleted`, or fail-closed `Ambiguous`.
+- [x] Codex spawn preflight now refuses a second active turn. An unrelated active turn causes retry/wait; an existing exact Delivery turn causes retry/wait instead of reinjection; a duplicate/unscoped marker or a marker turn that disappears without `task_complete` becomes `needs_rebind`. A marker turn older than the 6-hour worker bound also becomes `needs_rebind` rather than being duplicated.
+- [x] New continuation is allowed only when the rollout has no active turn/no marker, contains no stable malformed record, and has been quiet for at least 3 seconds. This closes the practical race with an initiating Codex CLI that is still writing an active turn without inventing a second process registry.
+- [x] Crash-window recovery is now rollout-backed: if the exact Delivery marker already has a matching persistent `task_complete`, runwatch marks the Delivery **delivered without resolving or launching Codex again**. This covers the critical crash after Codex completed its turn but before SQLite ack.
+- [x] Rollout-state tests cover `ThreadBusy -> DeliveryRunning -> DeliveryCompleted`, unrelated completed-turn idle, duplicate/unscoped-marker ambiguity, and oversized unrelated records without losing later completion evidence — **4/4 passed**.
+- [x] Default-ignored recovery acceptance seeds a real isolated SQLite Delivery in a non-acked state, writes persisted marker + matching `task_complete`, and invokes production `run_codex_invocation()` with a resolver that intentionally errors if called. Explicit run passed **1/1** and backfilled `delivered` without launcher resolution or re-reservation.
+- [x] R9c regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **92 passed, 0 failed, 8 ignored by default**. The eighth ignored gate is the rollout-completed crash recovery and was explicitly run green. Pi/SSH/MCP/Slurm/LSF regressions remain green.
+
+`codex queue` remains a possible future resident-app-server optimization, not a correctness dependency. Queue command success alone is never accepted as Delivery success; the durable rollout evidence above is the authority for idempotency and active-turn exclusion.
+
+### R9d — final real Codex provider continuation acceptance — next
+
+- [ ] Create a real persisted Codex thread with the configured provider, bind a short durable Slurm Run through the actual MCP `_meta.threadId` path, let the initiating Codex process exit, then require runwatchd to resume the exact thread automatically after terminal.
+- [ ] Acceptance requires canonical Delivery=`delivered`, exact thread identity, persisted marker + matching `task_complete`, no second marker, and no human “continue”. R9a already proved execution/binding; R9b/R9c proved driver/idempotency without provider dependence.
 
 Safety invariants:
 

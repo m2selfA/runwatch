@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use runwatch_core::{AgentInvocationRecord, DeliveryPayload, RunStore};
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::{BufRead as StdBufRead, BufReader as StdBufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -18,6 +20,8 @@ const ORPHAN_RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_CODEX_EVENT_LINE_BYTES: usize = 256 * 1024;
 const MAX_CODEX_STDERR_TAIL_BYTES: usize = 64 * 1024;
 const MAX_CODEX_PROMPT_BYTES: usize = 8 * 1024;
+const MAX_CODEX_ROLLOUT_LINE_BYTES: usize = 1024 * 1024;
+const CODEX_ROLLOUT_QUIET_PERIOD: Duration = Duration::from_secs(3);
 
 fn delivery_keeps_rpc_stdin_open(state: Option<&str>) -> bool {
     matches!(state, Some("delivering"))
@@ -147,6 +151,244 @@ fn codex_completion_prompt(payload: &DeliveryPayload) -> Result<String> {
         bail!("Codex continuation prompt exceeds {MAX_CODEX_PROMPT_BYTES} bytes");
     }
     Ok(prompt)
+}
+
+fn codex_delivery_marker(delivery_id: &str) -> String {
+    format!("[runwatch continuation delivery_id={delivery_id}]")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexRolloutState {
+    Idle,
+    ThreadBusy {
+        turn_id: String,
+    },
+    DeliveryRunning {
+        turn_id: String,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    DeliveryCompleted {
+        turn_id: String,
+    },
+    Ambiguous {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexRolloutInspection {
+    state: CodexRolloutState,
+    quiet_for: Option<Duration>,
+    malformed_lines: u32,
+    skipped_large_lines: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexRolloutLine {
+    Eof,
+    Line(Vec<u8>),
+    SkippedTooLarge,
+}
+
+fn read_codex_rollout_line<R>(reader: &mut R) -> Result<CodexRolloutLine>
+where
+    R: StdBufRead,
+{
+    let mut line = Vec::new();
+    let mut too_large = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if too_large {
+                Ok(CodexRolloutLine::SkippedTooLarge)
+            } else if line.is_empty() {
+                Ok(CodexRolloutLine::Eof)
+            } else {
+                Ok(CodexRolloutLine::Line(line))
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.unwrap_or(available.len());
+        if !too_large {
+            if line.len().saturating_add(take) > MAX_CODEX_ROLLOUT_LINE_BYTES {
+                too_large = true;
+                line.clear();
+            } else {
+                line.extend_from_slice(&available[..take]);
+            }
+        }
+        let consumed = take + usize::from(newline.is_some());
+        reader.consume(consumed);
+        if newline.is_some() {
+            return if too_large {
+                Ok(CodexRolloutLine::SkippedTooLarge)
+            } else {
+                Ok(CodexRolloutLine::Line(line))
+            };
+        }
+    }
+}
+
+fn parse_rollout_started_at(value: &serde_json::Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    value
+        .get("payload")?
+        .get("started_at")?
+        .as_str()
+        .and_then(|started| chrono::DateTime::parse_from_rfc3339(started).ok())
+        .map(|started| started.with_timezone(&chrono::Utc))
+}
+
+fn rollout_user_message_contains_marker(value: &serde_json::Value, marker: &str) -> bool {
+    let payload = match value.get("payload") {
+        Some(payload) => payload,
+        None => return false,
+    };
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("response_item")
+        || payload.get("type").and_then(serde_json::Value::as_str) != Some("message")
+        || payload.get("role").and_then(serde_json::Value::as_str) != Some("user")
+    {
+        return false;
+    }
+    payload
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
+                    && item
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|text| text.contains(marker))
+            })
+        })
+}
+
+fn inspect_codex_rollout(path: &Path, delivery_id: &str) -> Result<CodexRolloutInspection> {
+    let marker = codex_delivery_marker(delivery_id);
+    let file =
+        File::open(path).with_context(|| format!("open Codex rollout {}", path.display()))?;
+    let quiet_for = file
+        .metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.elapsed().ok());
+    let mut reader = StdBufReader::new(file);
+    let mut active_turn: Option<(String, Option<chrono::DateTime<chrono::Utc>>)> = None;
+    let mut marker_turn: Option<(String, Option<chrono::DateTime<chrono::Utc>>)> = None;
+    let mut marker_completed = false;
+    let mut marker_count = 0u32;
+    let mut marker_without_turn = false;
+    let mut malformed_lines = 0u32;
+    let mut skipped_large_lines = 0u32;
+
+    loop {
+        let line = match read_codex_rollout_line(&mut reader)? {
+            CodexRolloutLine::Eof => break,
+            CodexRolloutLine::SkippedTooLarge => {
+                skipped_large_lines += 1;
+                continue;
+            }
+            CodexRolloutLine::Line(line) => line,
+        };
+        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+            continue;
+        }
+        let value = match serde_json::from_slice::<serde_json::Value>(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                malformed_lines += 1;
+                continue;
+            }
+        };
+        let top = value.get("type").and_then(serde_json::Value::as_str);
+        let payload = value.get("payload");
+        let payload_type = payload
+            .and_then(|payload| payload.get("type"))
+            .and_then(serde_json::Value::as_str);
+
+        if top == Some("event_msg") && payload_type == Some("task_started") {
+            if let Some(turn_id) = payload
+                .and_then(|payload| payload.get("turn_id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                active_turn = Some((turn_id.to_string(), parse_rollout_started_at(&value)));
+            }
+            continue;
+        }
+        if top == Some("event_msg") && payload_type == Some("task_complete") {
+            if let Some(turn_id) = payload
+                .and_then(|payload| payload.get("turn_id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                if marker_turn
+                    .as_ref()
+                    .is_some_and(|(marker_turn_id, _)| marker_turn_id == turn_id)
+                {
+                    marker_completed = true;
+                }
+                if active_turn
+                    .as_ref()
+                    .is_some_and(|(active_turn_id, _)| active_turn_id == turn_id)
+                {
+                    active_turn = None;
+                }
+            }
+            continue;
+        }
+        if rollout_user_message_contains_marker(&value, &marker) {
+            marker_count += 1;
+            if marker_count == 1 {
+                if let Some((turn_id, started_at)) = active_turn.clone() {
+                    marker_turn = Some((turn_id, started_at));
+                } else {
+                    marker_without_turn = true;
+                }
+            }
+        }
+    }
+
+    let state = if marker_count > 1 {
+        CodexRolloutState::Ambiguous {
+            reason: format!(
+                "Codex rollout contains {marker_count} user messages for Delivery {delivery_id}"
+            ),
+        }
+    } else if marker_without_turn {
+        CodexRolloutState::Ambiguous {
+            reason: format!(
+                "Codex rollout contains Delivery {delivery_id} marker outside an active turn"
+            ),
+        }
+    } else if let Some((turn_id, started_at)) = marker_turn {
+        if marker_completed {
+            CodexRolloutState::DeliveryCompleted { turn_id }
+        } else if active_turn
+            .as_ref()
+            .is_some_and(|(active_turn_id, _)| active_turn_id == &turn_id)
+        {
+            CodexRolloutState::DeliveryRunning {
+                turn_id,
+                started_at,
+            }
+        } else {
+            CodexRolloutState::Ambiguous {
+                reason: format!(
+                    "Codex Delivery {delivery_id} turn {turn_id} has no matching task_complete but is no longer the active turn"
+                ),
+            }
+        }
+    } else if let Some((turn_id, _)) = active_turn {
+        CodexRolloutState::ThreadBusy { turn_id }
+    } else {
+        CodexRolloutState::Idle
+    };
+
+    Ok(CodexRolloutInspection {
+        state,
+        quiet_for,
+        malformed_lines,
+        skipped_large_lines,
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -472,10 +714,32 @@ fn finish_codex_delivery(
     Ok(())
 }
 
+fn finish_codex_without_process(
+    store: &RunStore,
+    invocation: &AgentInvocationRecord,
+    outcome: &str,
+    message: Option<&str>,
+) -> Result<()> {
+    finish_codex_delivery(store, invocation, outcome, message)?;
+    store.finish_agent_invocation_process(&invocation.invocation_id, None, message)?;
+    Ok(())
+}
+
 async fn run_codex_invocation(
     store: Arc<RunStore>,
     invocation: AgentInvocationRecord,
 ) -> Result<()> {
+    run_codex_invocation_with_resolver(store, invocation, resolve_codex_launcher).await
+}
+
+async fn run_codex_invocation_with_resolver<F>(
+    store: Arc<RunStore>,
+    invocation: AgentInvocationRecord,
+    resolve_launcher: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<AgentLauncher>,
+{
     let session_file = invocation
         .session_file
         .as_deref()
@@ -491,12 +755,98 @@ async fn run_codex_invocation(
             "Codex project cwd is unavailable: {}",
             invocation.project_root
         );
-        finish_codex_delivery(&store, &invocation, "needs_rebind", Some(&message))?;
-        store.finish_agent_invocation_process(&invocation.invocation_id, None, Some(&message))?;
+        finish_codex_without_process(&store, &invocation, "needs_rebind", Some(&message))?;
         return Ok(());
     }
 
-    let launcher = resolve_codex_launcher()?;
+    let inspection = inspect_codex_rollout(Path::new(session_file), &invocation.delivery_id)?;
+    match inspection.state {
+        CodexRolloutState::DeliveryCompleted { turn_id } => {
+            finish_codex_without_process(&store, &invocation, "delivered", None)?;
+            let _ = turn_id;
+            return Ok(());
+        }
+        CodexRolloutState::DeliveryRunning {
+            turn_id,
+            started_at,
+        } => {
+            let stale = started_at
+                .and_then(|started| {
+                    chrono::Utc::now()
+                        .signed_duration_since(started)
+                        .to_std()
+                        .ok()
+                })
+                .is_some_and(|age| age >= MAX_AGENT_RUNTIME);
+            let message = if stale {
+                format!(
+                    "Codex Delivery {} is already persisted in turn {turn_id}, but that turn has not completed within {} seconds; refusing duplicate injection",
+                    invocation.delivery_id,
+                    MAX_AGENT_RUNTIME.as_secs()
+                )
+            } else {
+                format!(
+                    "Codex Delivery {} is already persisted in active turn {turn_id}; waiting for task_complete instead of injecting it again",
+                    invocation.delivery_id
+                )
+            };
+            finish_codex_without_process(
+                &store,
+                &invocation,
+                if stale { "needs_rebind" } else { "retry" },
+                Some(&message),
+            )?;
+            return Ok(());
+        }
+        CodexRolloutState::ThreadBusy { turn_id } => {
+            let message = format!(
+                "Codex thread {} already has active turn {turn_id}; waiting for the exact thread to become idle before continuation",
+                invocation.payload.binding.session_id
+            );
+            finish_codex_without_process(&store, &invocation, "retry", Some(&message))?;
+            return Ok(());
+        }
+        CodexRolloutState::Ambiguous { reason } => {
+            finish_codex_without_process(&store, &invocation, "needs_rebind", Some(&reason))?;
+            return Ok(());
+        }
+        CodexRolloutState::Idle => {
+            if inspection.malformed_lines > 0 {
+                let stable = inspection
+                    .quiet_for
+                    .is_some_and(|quiet| quiet >= CODEX_ROLLOUT_QUIET_PERIOD);
+                let message = format!(
+                    "Codex rollout contains {} malformed/incomplete record(s); {}",
+                    inspection.malformed_lines,
+                    if stable {
+                        "the file is already quiet, so automatic continuation is blocked"
+                    } else {
+                        "waiting for the active writer to finish"
+                    }
+                );
+                finish_codex_without_process(
+                    &store,
+                    &invocation,
+                    if stable { "needs_rebind" } else { "retry" },
+                    Some(&message),
+                )?;
+                return Ok(());
+            }
+            if !inspection
+                .quiet_for
+                .is_some_and(|quiet| quiet >= CODEX_ROLLOUT_QUIET_PERIOD)
+            {
+                let message = format!(
+                    "Codex rollout is not yet quiet for {} seconds; deferring continuation to avoid racing an active CLI writer",
+                    CODEX_ROLLOUT_QUIET_PERIOD.as_secs()
+                );
+                finish_codex_without_process(&store, &invocation, "retry", Some(&message))?;
+                return Ok(());
+            }
+        }
+    }
+
+    let launcher = resolve_launcher()?;
     run_codex_invocation_with_launcher(store, invocation, launcher).await
 }
 
@@ -752,6 +1102,175 @@ mod tests {
         }
     }
 
+    fn rollout_temp_file(label: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "runwatch-codex-rollout-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        (root.clone(), root.join("rollout.jsonl"))
+    }
+
+    fn rollout_task_started(turn_id: &str) -> String {
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": "2026-09-01T02:00:00Z"
+            }
+        })
+        .to_string()
+    }
+
+    fn rollout_user_marker(delivery_id: &str) -> String {
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": format!("{} continue the scientific task", codex_delivery_marker(delivery_id))
+                }]
+            }
+        })
+        .to_string()
+    }
+
+    fn rollout_task_complete(turn_id: &str) -> String {
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": turn_id,
+                "last_agent_message": "omitted from runwatch inspection"
+            }
+        })
+        .to_string()
+    }
+
+    fn write_rollout(path: &Path, lines: &[String]) {
+        let mut body = lines.join("\n");
+        body.push('\n');
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn codex_rollout_state_machine_tracks_busy_running_and_completed_delivery() {
+        let (root, rollout) = rollout_temp_file("state-machine");
+        let delivery = "r9-rollout:a1:terminal";
+        let turn = "turn-r9";
+
+        write_rollout(&rollout, &[rollout_task_started(turn)]);
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert_eq!(
+            inspection.state,
+            CodexRolloutState::ThreadBusy {
+                turn_id: turn.into()
+            }
+        );
+
+        write_rollout(
+            &rollout,
+            &[rollout_task_started(turn), rollout_user_marker(delivery)],
+        );
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert!(matches!(
+            inspection.state,
+            CodexRolloutState::DeliveryRunning { ref turn_id, .. } if turn_id == turn
+        ));
+
+        write_rollout(
+            &rollout,
+            &[
+                rollout_task_started(turn),
+                rollout_user_marker(delivery),
+                rollout_task_complete(turn),
+            ],
+        );
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert_eq!(
+            inspection.state,
+            CodexRolloutState::DeliveryCompleted {
+                turn_id: turn.into()
+            }
+        );
+        assert_eq!(inspection.malformed_lines, 0);
+        assert_eq!(inspection.skipped_large_lines, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_rollout_idle_after_unrelated_completed_turn() {
+        let (root, rollout) = rollout_temp_file("idle");
+        let turn = "unrelated-turn";
+        write_rollout(
+            &rollout,
+            &[rollout_task_started(turn), rollout_task_complete(turn)],
+        );
+        let inspection = inspect_codex_rollout(&rollout, "different-delivery").unwrap();
+        assert_eq!(inspection.state, CodexRolloutState::Idle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_rollout_duplicate_or_unscoped_marker_is_ambiguous() {
+        let (root, rollout) = rollout_temp_file("ambiguous");
+        let delivery = "dup:a1:terminal";
+        write_rollout(&rollout, &[rollout_user_marker(delivery)]);
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert!(matches!(
+            inspection.state,
+            CodexRolloutState::Ambiguous { ref reason } if reason.contains("outside an active turn")
+        ));
+
+        write_rollout(
+            &rollout,
+            &[
+                rollout_task_started("turn-1"),
+                rollout_user_marker(delivery),
+                rollout_task_complete("turn-1"),
+                rollout_task_started("turn-2"),
+                rollout_user_marker(delivery),
+            ],
+        );
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert!(matches!(
+            inspection.state,
+            CodexRolloutState::Ambiguous { ref reason } if reason.contains("2 user messages")
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_rollout_skips_oversized_unrelated_record_and_keeps_delivery_evidence() {
+        let (root, rollout) = rollout_temp_file("oversized");
+        let delivery = "large:a1:terminal";
+        let turn = "turn-large";
+        let mut file = std::fs::File::create(&rollout).unwrap();
+        use std::io::Write;
+        writeln!(file, "{}", rollout_task_started(turn)).unwrap();
+        file.write_all(&vec![b'x'; MAX_CODEX_ROLLOUT_LINE_BYTES + 1])
+            .unwrap();
+        file.write_all(b"\n").unwrap();
+        writeln!(file, "{}", rollout_user_marker(delivery)).unwrap();
+        writeln!(file, "{}", rollout_task_complete(turn)).unwrap();
+        drop(file);
+
+        let inspection = inspect_codex_rollout(&rollout, delivery).unwrap();
+        assert_eq!(
+            inspection.state,
+            CodexRolloutState::DeliveryCompleted {
+                turn_id: turn.into()
+            }
+        );
+        assert_eq!(inspection.skipped_large_lines, 1);
+        assert_eq!(inspection.malformed_lines, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn codex_prompt_and_resume_argv_are_bounded_exact_and_do_not_bypass_trust() {
         let thread = "019c1234-5678-7000-8000-000000000009";
@@ -839,6 +1358,126 @@ mod tests {
         assert_eq!(evidence.malformed_events, 0);
         assert!(evidence.turn_completed);
         assert!(evidence.is_success(thread));
+    }
+
+    fn seed_codex_test_invocation(
+        root: &Path,
+        thread: &str,
+        rollout: &Path,
+        run_id: &str,
+    ) -> (Arc<RunStore>, String, AgentInvocationRecord) {
+        use chrono::Utc;
+        use runwatch_core::{
+            ContinuationBinding, RemoteWorkspaceRef, RunAttemptRecord, RunRecord, RunResources,
+            RunStatus, RunnerKind,
+        };
+
+        let store = Arc::new(RunStore::open_default().unwrap());
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "stub-host".into(),
+            cwd: "/stub/workspace".into(),
+        };
+        let binding = ContinuationBinding {
+            agent_kind: "codex".into(),
+            session_id: thread.into(),
+            session_file: Some(rollout.to_string_lossy().into_owned()),
+            origin_leaf_id: None,
+            project_root: root.to_string_lossy().into_owned(),
+            workspace: workspace.clone(),
+            adapter_path: None,
+        };
+        let now = Utc::now();
+        let mut run = RunRecord::new(
+            run_id.into(),
+            workspace.host_alias.clone(),
+            RunnerKind::Slurm,
+        );
+        run.status = RunStatus::Submitting;
+        run.workspace = Some(workspace.clone());
+        run.attempt_no = Some(1);
+        run.session_id = Some(thread.into());
+        run.agent = Some("codex".into());
+        run.project_root = Some(binding.project_root.clone());
+        run.updated_at = now;
+        let attempt = RunAttemptRecord {
+            run_id: run_id.into(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: workspace.host_alias.clone(),
+            workdir: workspace.cwd.clone(),
+            command: "true".into(),
+            resources: RunResources::default(),
+            job_name: format!("rw-{run_id}-a1"),
+            job_id: Some("stub-job-1".into()),
+            script_path: "/stub/attempt-1.sh".into(),
+            stdout_path: "/stub/stdout.log".into(),
+            stderr_path: "/stub/stderr.log".into(),
+            terminal_path: "/stub/terminal.json".into(),
+            receipt_path: "/stub/submission.receipt".into(),
+            status: RunStatus::Queued,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, Some(&binding))
+                .unwrap()
+        );
+        run.status = RunStatus::Succeeded;
+        run.job_id = Some("stub-job-1".into());
+        run.updated_at = Utc::now();
+        store.upsert(&run).unwrap();
+        let delivery_id = store.ensure_terminal_delivery(&run).unwrap().unwrap();
+        let invocation = store
+            .reserve_offline_invocation(Duration::ZERO)
+            .unwrap()
+            .expect("Codex test invocation should reserve");
+        (store, delivery_id, invocation)
+    }
+
+    #[tokio::test]
+    #[ignore = "uses isolated RUNWATCH_DATA_DIR to verify rollout-completed crash recovery without launching Codex"]
+    async fn codex_completed_rollout_backfills_delivery_without_relaunch() {
+        let root = PathBuf::from(
+            std::env::var_os("RUNWATCH_DATA_DIR")
+                .expect("RUNWATCH_DATA_DIR must point at an isolated directory for this gate"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        let rollout = root.join("rollout-recovery.jsonl");
+        std::fs::write(&rollout, b"{}\n").unwrap();
+        let thread = "019c1234-5678-7000-8000-000000000015";
+        let (store, delivery_id, invocation) =
+            seed_codex_test_invocation(&root, thread, &rollout, "r9-codex-recovery");
+        let turn = "turn-r9-recovery";
+        write_rollout(
+            &rollout,
+            &[
+                rollout_task_started(turn),
+                rollout_user_marker(&delivery_id),
+                rollout_task_complete(turn),
+            ],
+        );
+
+        run_codex_invocation_with_resolver(store.clone(), invocation, || {
+            Err(anyhow::anyhow!(
+                "launcher resolution must not run after completed rollout evidence"
+            ))
+        })
+        .await
+        .expect("completed rollout should backfill Delivery without relaunch");
+        assert_eq!(
+            store.get_delivery_state(&delivery_id).unwrap().as_deref(),
+            Some("delivered")
+        );
+        assert!(
+            store
+                .reserve_offline_invocation(Duration::ZERO)
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(windows)]
