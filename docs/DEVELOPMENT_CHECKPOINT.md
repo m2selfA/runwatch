@@ -448,6 +448,13 @@ Remaining R8:
 - Observation-aware pi-runs regression — **37 passed, 0 failed, 1 real-Pi live gate skipped by default**; live isolated smoke preserved `Run=running` while surfacing `health=unreachable/source=transport` as `Runs 1 running · 1 probe issue`.
 - Final read-only service status — `daemon=disabled task=runwatchd  gui_autostart=disabled`; no production task was installed by acceptance testing.
 
+### Repository baseline — completed 2026-09-01
+
+- [x] Expanded `.gitignore` to exclude runwatch runtime state (`.runwatch/`, SQLite DB/WAL/SHM, logs and PID files) in addition to Cargo target/IDE outputs.
+- [x] Pre-commit secret preflight found no OpenSSH/RSA private-key blocks or common inline API key/password/secret assignments.
+- [x] Established the first repository baseline as commit **`ecf191a` — `feat: establish durable runwatch runtime baseline`**, containing the validated R0–R8/R2 implementation and documentation (43 files, 15,434 inserted lines).
+- [x] This restores historical traceability before R9 and removes the source/documentation drift risk exposed during R8c.
+
 ## Known transitional debt
 
 Until later phases complete, these are explicitly compatibility paths, not architecture to extend:
@@ -457,7 +464,6 @@ Until later phases complete, these are explicitly compatibility paths, not archi
 - MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
 - Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd requires pre-existing known-hosts trust.
 - scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is now closed; remaining work is release hardening and future agent adapters.
-- **Repository baseline debt:** this runwatch worktree still has no Git commit and all project files are untracked. R8c exposed a real source/documentation drift that could not be traced historically; establish the first baseline commit before R9 or further release-hardening work.
 
 ## Release gate for the overall project
 
