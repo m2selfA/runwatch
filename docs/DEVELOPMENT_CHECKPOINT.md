@@ -49,7 +49,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
 | R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
 | R9 | Additional coding-agent adapters, starting with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed** |
-| R10 | Production adapter onboarding + repeatable release acceptance | **planned — Codex install/status/remove UX first; then scripted provider gates and compatibility diagnostics** |
+| R10 | Production adapter onboarding + repeatable release acceptance | **in progress 2026-09-01 — R10a Codex install/status/remove completed; R10b read-only doctor/compatibility next** |
 
 ## R0 completion record
 
@@ -505,12 +505,26 @@ Architecture and acceptance:
 - [x] Persistent rollout evidence independently confirmed exact-thread and exactly-once semantics: `session_meta.id == session_meta.session_id == 01a05b2b-...`, the deterministic continuation marker occurred **exactly once**, marker turn `01a05b2c-312e-7dc0-91f3-46c7478878b4` had a matching `task_complete`, and no active turn remained after the scan.
 - [x] Acceptance cleanup removed the temporary `runwatch_r9d` global MCP entry, stopped the isolated daemon, and deleted isolated SQLite/temp logs. The real Codex rollout remains persisted as durable thread evidence. No human typed “continue”.
 
-### R10 — production adapter onboarding + repeatable release acceptance — planned
+### R10 — production adapter onboarding + repeatable release acceptance — in progress 2026-09-01
 
-R9 proves the Codex adapter semantics. R10 productizes them so a user does not have to reproduce the acceptance harness by hand:
+R9 proves the Codex adapter semantics. R10 productizes them so a user does not have to reproduce the acceptance harness by hand.
 
-- [ ] Add `runwatch agent codex status/install/remove` (or equivalent coherent CLI surface) using Codex's own `mcp` management command rather than editing `~/.codex/config.toml` directly. Install must resolve the sibling `runwatch-mcp` executable, detect conflicts, be idempotent, and never overwrite an unrelated `runwatch` MCP entry silently.
-- [ ] Add a read-only Codex compatibility/doctor surface: installed CLI version, native launcher availability, persisted-session root, MCP registration target, runwatchd reachability, and supported/unsupported reason. Do not inspect credentials or conversation content.
+#### R10a — Codex MCP onboarding — completed 2026-09-01
+
+- [x] Added `runwatch agent codex status|install|remove`. The implementation invokes Codex's own `codex mcp get/add/remove` management surface and never edits `~/.codex/config.toml` directly.
+- [x] The registration name is `runwatch`; the expected command is the `runwatch-mcp` executable installed beside the current `runwatch` binary. `install` verifies the sibling exists, registers an absolute path, then round-trips `codex mcp get runwatch` before reporting success.
+- [x] Ownership is fail-closed: only `transport=stdio`, no extra args, and an exact normalized command-path match are considered owned. A missing entry is installable/removable idempotently; a same-name entry pointing elsewhere is reported as `conflict`, and both install and remove refuse to overwrite/delete it.
+- [x] `status` is read-only and reports Codex availability/version, expected MCP binary availability/path, and registration state (`missing`, `installed`, or `conflict`). A missing Codex executable is diagnostic output rather than a configuration mutation.
+- [x] Windows child management uses native `codex.exe` (or explicit `RUNWATCH_CODEX_EXECUTABLE`) with `CREATE_NO_WINDOW`; unattended onboarding does not depend on PowerShell/Scoop `.ps1` forwarding semantics.
+- [x] Real isolated Codex 0.150.1 acceptance exposed a Windows path issue: `canonicalize()` yielded `\\?\E:\...\runwatch-mcp.exe`. R8 had already shown verbatim paths are fragile for external Windows consumers, so onboarding now strips `\\?\` / converts `\\?\UNC\...` to ordinary DOS/UNC form before writing Codex configuration. Dedicated regression covers both forms.
+- [x] Focused CLI tests after the fix: **4 passed, 0 failed** — owned parsing, missing/conflict fail-closed behavior, malformed-success rejection, and Windows verbatim path normalization.
+- [x] Real management round-trip used an isolated temporary `CODEX_HOME` and the installed Codex 0.150.1: missing -> install -> second install idempotent -> remove -> second remove idempotent all returned success, and the persisted command was ordinary `E:\inter\Documents\Repos\runwatch\target\debug\runwatch-mcp.exe` with no verbatim prefix.
+- [x] The same isolated acceptance seeded a conflicting `runwatch` MCP pointing at `C:\Windows\System32\cmd.exe /d /c echo conflict`: `runwatch agent codex install` and `remove` both returned nonzero, `status` reported `registration=conflict`, and the foreign entry remained unchanged until explicit test cleanup. Temporary `CODEX_HOME` was deleted afterwards; the user's real Codex configuration was untouched.
+- [x] R10a closeout regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **96 passed, 0 failed, 8 ignored by default**. All prior Pi/Codex continuation, scheduler, SSH, service and MCP gates remain green.
+
+#### R10b — read-only Codex doctor/compatibility — next
+
+- [ ] Add one bounded read-only doctor surface covering installed CLI version/native launcher, sibling `runwatch-mcp`, persisted-session root, MCP ownership/registration, runwatchd reachability, and a final ready/not-ready reason. Do not inspect credentials or conversation content and do not mutate MCP configuration.
 - [ ] Encode the R9d provider gate as an explicit opt-in release acceptance with isolated runwatch state, disposable MCP registration, exact-thread/Delivery/rollout assertions, and guaranteed cleanup.
 - [ ] Keep Pi as the reference native adapter and Codex as the reference MCP-bound adapter; extract only protocol concepts that are actually common before adding further coding-agent CLIs.
 

@@ -1,3 +1,5 @@
+mod codex;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use runwatch_core::autostart;
@@ -19,11 +21,35 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum AgentCmd {
+    /// Manage the Codex CLI adapter
+    Codex {
+        #[command(subcommand)]
+        cmd: CodexCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CodexCmd {
+    /// Show Codex CLI and runwatch MCP registration state
+    Status,
+    /// Register the sibling runwatch-mcp binary with Codex
+    Install,
+    /// Remove the Codex MCP registration only when it belongs to this runwatch install
+    Remove,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// List ~/.ssh/config host aliases
     Hosts,
     /// Show configured watch hosts and ledger path
     Status,
+    /// Manage coding-agent adapters
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
     /// List runs in the local ledger
     List,
     /// Adopt/register an existing scheduler Run (durable new submissions use submit_run_v2 via agent integrations)
@@ -124,6 +150,13 @@ async fn main() -> Result<()> {
                 println!("  {} enabled={} poll={}s", h.alias, h.enabled, h.poll_sec);
             }
         }
+        Cmd::Agent { cmd } => match cmd {
+            AgentCmd::Codex { cmd } => match cmd {
+                CodexCmd::Status => codex::status()?,
+                CodexCmd::Install => codex::install()?,
+                CodexCmd::Remove => codex::remove()?,
+            },
+        },
         Cmd::List => {
             let value =
                 runwatch_engine::ipc::call_local("list_runs", serde_json::json!({})).await?;

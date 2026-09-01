@@ -330,6 +330,14 @@ spawn 前 scanner 只寻找这些结构和本 Delivery marker，不保存一般�
 
 R9d 已完成真实 provider 终验：Codex 0.150.1 exact thread `01a05b2b-4cba-7632-9be0-3f3cc18ca3ab` 通过实际 MCP `_meta.threadId` 提交 gm00 Slurm Job 31739 后完全退出；runwatchd 在 Run terminal 后自动 `exec resume` 同一 thread，SQLite Delivery=`delivered`/AgentInvocation=`completed`，rollout 中 deterministic marker 恰好一次且所在 turn 有 matching `task_complete`。整个恢复过程没有人工 `continue`。验收使用 disposable MCP registration + isolated runwatch state，并在结束后清理；production 下一步是把 Codex MCP registration/status/doctor 做成 runwatch 自身的 onboarding UX。
 
+### Codex production onboarding（R10）
+
+Codex adapter 的安装权威仍然是 **Codex 自己的 MCP 配置管理面**，不是 runwatch 直接改 `config.toml`。`runwatch agent codex install/status/remove` 通过 `codex mcp get/add/remove` 管理固定名称 `runwatch`，并把当前 `runwatch` 同目录的 `runwatch-mcp` 作为唯一 owned target。
+
+所有权判定是保守的：只有 `stdio + 无额外 args + command path 精确匹配 sibling runwatch-mcp` 才视为 runwatch 自己安装的 entry。不存在时 install/remove 幂等；同名但 transport/command/args 不匹配时进入 `conflict`，install 与 remove 都拒绝覆盖或删除。这样 runwatch 不会把用户已有的同名 MCP 当成自己的配置。
+
+Windows 对外部 consumer 写入路径前统一去除 Win32 verbatim prefix：`\\?\C:\... -> C:\...`、`\\?\UNC\server\share\... -> \\server\share\...`。这是 R10a 隔离 Codex 0.150.1 实机 round-trip 抓到的真实问题，沿用 R8 Task Scheduler 已验证的 consumer-safe path 原则。Codex 管理子进程使用 native `codex.exe`/显式 `RUNWATCH_CODEX_EXECUTABLE` 且 `CREATE_NO_WINDOW`，不依赖 PowerShell shim。R10b 将只增加只读 doctor/compatibility 聚合，不让 doctor 隐式安装或修改配置。
+
 
 ## 安全边界
 
