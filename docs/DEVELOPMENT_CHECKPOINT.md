@@ -48,7 +48,8 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R6 | Branch lineage / rebind safety | **real same-session `/tree` block + explicit rebind recovery passed 2026-08-31** |
 | R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
 | R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
-| R9 | Additional coding-agent adapters, starting with Codex CLI | **in progress 2026-09-01 — R9a exact-thread MCP binding + durable submit completed; R9b terminal Delivery next** |
+| R9 | Additional coding-agent adapters, starting with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed** |
+| R10 | Production adapter onboarding + repeatable release acceptance | **planned — Codex install/status/remove UX first; then scripted provider gates and compatibility diagnostics** |
 
 ## R0 completion record
 
@@ -495,10 +496,23 @@ Architecture and acceptance:
 
 `codex queue` remains a possible future resident-app-server optimization, not a correctness dependency. Queue command success alone is never accepted as Delivery success; the durable rollout evidence above is the authority for idempotency and active-turn exclusion.
 
-### R9d — final real Codex provider continuation acceptance — next
+### R9d — final real Codex provider continuation acceptance — completed 2026-09-01
 
-- [ ] Create a real persisted Codex thread with the configured provider, bind a short durable Slurm Run through the actual MCP `_meta.threadId` path, let the initiating Codex process exit, then require runwatchd to resume the exact thread automatically after terminal.
-- [ ] Acceptance requires canonical Delivery=`delivered`, exact thread identity, persisted marker + matching `task_complete`, no second marker, and no human “continue”. R9a already proved execution/binding; R9b/R9c proved driver/idempotency without provider dependence.
+- [x] Started a real persisted Codex 0.150.1 provider thread in the runwatch repository with read-only sandbox and no dangerous bypass flags. A temporary global MCP entry `runwatch_r9d` pointed only at an isolated runwatch data dir/named pipe so the initiating Codex process and the later daemon-spawned `codex exec resume` saw the same MCP adapter without touching the normal runwatch ledger.
+- [x] The initiating provider turn created exact thread **`01a05b2b-4cba-7632-9be0-3f3cc18ca3ab`**, called `runwatch_r9d.submit_science_run` exactly once through the real MCP `_meta.threadId` path, and submitted `r9d_codex_provider_20260901_1208_01` to `gm00:/share/home/shark/tmp` as Slurm Job **31739**. Canonical Run binding was `agent=codex`, the exact thread id, and project root `E:\\inter\\Documents\\Repos\\runwatch` sourced from persisted Codex `session_meta` rather than model arguments.
+- [x] The initiating Codex process then exited normally after `R9D_SUBMITTED ...`; no wait/poll/continue message was sent. The scientific Run independently reached `succeeded`, after which resident runwatchd reserved the terminal Delivery and launched the Codex AgentAdapter offline.
+- [x] Canonical isolated SQLite evidence after automatic resume: Delivery `r9d_codex_provider_20260901_1208_01:a1:terminal` was **`delivered` with attempts=1**, and its `AgentInvocation` was **`completed`** (PID 34736) with the same `agent_kind=codex` and exact session id; no retry or `needs_rebind` occurred.
+- [x] Persistent rollout evidence independently confirmed exact-thread and exactly-once semantics: `session_meta.id == session_meta.session_id == 01a05b2b-...`, the deterministic continuation marker occurred **exactly once**, marker turn `01a05b2c-312e-7dc0-91f3-46c7478878b4` had a matching `task_complete`, and no active turn remained after the scan.
+- [x] Acceptance cleanup removed the temporary `runwatch_r9d` global MCP entry, stopped the isolated daemon, and deleted isolated SQLite/temp logs. The real Codex rollout remains persisted as durable thread evidence. No human typed “continue”.
+
+### R10 — production adapter onboarding + repeatable release acceptance — planned
+
+R9 proves the Codex adapter semantics. R10 productizes them so a user does not have to reproduce the acceptance harness by hand:
+
+- [ ] Add `runwatch agent codex status/install/remove` (or equivalent coherent CLI surface) using Codex's own `mcp` management command rather than editing `~/.codex/config.toml` directly. Install must resolve the sibling `runwatch-mcp` executable, detect conflicts, be idempotent, and never overwrite an unrelated `runwatch` MCP entry silently.
+- [ ] Add a read-only Codex compatibility/doctor surface: installed CLI version, native launcher availability, persisted-session root, MCP registration target, runwatchd reachability, and supported/unsupported reason. Do not inspect credentials or conversation content.
+- [ ] Encode the R9d provider gate as an explicit opt-in release acceptance with isolated runwatch state, disposable MCP registration, exact-thread/Delivery/rollout assertions, and guaranteed cleanup.
+- [ ] Keep Pi as the reference native adapter and Codex as the reference MCP-bound adapter; extract only protocol concepts that are actually common before adding further coding-agent CLIs.
 
 Safety invariants:
 
@@ -515,22 +529,29 @@ Until later phases complete, these are explicitly compatibility paths, not archi
 - `RunRecord` still carries deprecated callback compatibility fields for historical JSON/DB deserialization, but no runtime shell callback execution remains.
 - MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
 - Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd requires pre-existing known-hosts trust.
-- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is now closed; remaining work is release hardening and future agent adapters.
+- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex now both have real provider continuation acceptance; remaining work is production onboarding, repeatable release automation, broader interoperability and long soak hardening.
 
 ## Release gate for the overall project
 
-The product is not considered complete until this unattended loop passes:
+The core continuation runtime is considered functionally complete only when both reference adapter loops pass without human intervention:
 
 ```text
 Pi on Windows
   -> prepare remote workspace
   -> runs_submit to remote Slurm/LSF
   -> Pi exits completely
-  -> computation runs for hours
+  -> computation runs independently
   -> runwatch survives reconnect/restart conditions
-  -> terminal delivery restores the exact Pi research context
-  -> Pi explicitly activates the remote workspace
+  -> terminal delivery restores the exact Pi session/branch
   -> Pi inspects results and continues scientific reasoning
+
+Codex CLI on Windows
+  -> submit_science_run through MCP _meta.threadId
+  -> initiating Codex process exits completely
+  -> computation runs independently
+  -> runwatch resumes exact persisted Codex thread
+  -> one deterministic Delivery marker reaches matching task_complete
+  -> canonical Delivery is delivered exactly once
 ```
 
-No human should need to type “continue”.
+Both loops have now passed real provider acceptance. Release hardening still includes multi-hour soak, repeatable installation/diagnostics and broader client interoperability. No human should need to type “continue”.
