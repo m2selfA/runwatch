@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+.idea/
+.vscode/
+.runwatch/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+

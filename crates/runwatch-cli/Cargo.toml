@@ -1,0 +1,20 @@
+[package]
+name = "runwatch-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "runwatch command-line client"
+
+[[bin]]
+name = "runwatch"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+runwatch-core.workspace = true
+runwatch-engine.workspace = true
+runwatch-ssh.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

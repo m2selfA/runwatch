@@ -1,0 +1,20 @@
+[package]
+name = "runwatch-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "stdio MCP server for the runwatch ledger"
+
+[[bin]]
+name = "runwatch-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+rmcp.workspace = true
+runwatch-core.workspace = true
+runwatch-engine.workspace = true
+runwatch-ssh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

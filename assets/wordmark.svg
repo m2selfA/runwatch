@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width="640" height="160">
+  <rect width="640" height="160" fill="#F7F4EE"/>
+  <use href="icon.svg" x="24" y="16" transform="scale(0.5)"/>
+  <text x="180" y="96" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="56" font-weight="650" fill="#243746">runwatch</text>
+  <text x="182" y="128" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" fill="#5B6B75">watch the run, not the queue</text>
+</svg>

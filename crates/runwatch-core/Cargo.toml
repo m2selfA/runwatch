@@ -1,0 +1,20 @@
+[package]
+name = "runwatch-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Durable run ledger and poll loop for runwatch"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+fs2.workspace = true
+rusqlite.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

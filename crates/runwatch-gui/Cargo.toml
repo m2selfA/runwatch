@@ -1,0 +1,24 @@
+[package]
+name = "runwatch-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "runwatch tray and main window (windui)"
+build = "build.rs"
+
+[[bin]]
+name = "runwatch-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+runwatch-core.workspace = true
+runwatch-engine.workspace = true
+runwatch-ssh.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+windui = "0.14"
+
+[build-dependencies]
+winres = "0.1"

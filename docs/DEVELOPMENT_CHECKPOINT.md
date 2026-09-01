@@ -1,0 +1,478 @@
+# runwatch Development Checkpoint
+
+Last updated: 2026-09-01
+
+This file is the authoritative implementation checkpoint for the current redesign. **Every completed development phase must update this document before the next phase begins.**
+
+## Product target
+
+runwatch is the **Durable Run Lifecycle Authority** for long-running scientific computation started by coding agents.
+
+Three-project boundary:
+
+- `runwatch`: durable Run/Attempt/Event/Observation/Delivery state, scheduler lifecycle, narrow persistent SSH, retry and continuation dispatch.
+- `pi-runs`: Pi-native tools, Pi session/branch binding, Pi continuation UX. It must not become a second durable scheduler control plane.
+- `pi-ssh-tools`: Pi-online remote workspace read/write/edit/shell. It is not a long-lived watcher and is not imported by runwatch.
+
+Shared interop concept:
+
+```text
+RemoteWorkspaceRef { host_alias, cwd }
+```
+
+Host aliases remain authoritative in the user's `~/.ssh/config`.
+
+## Frozen architecture decisions
+
+1. **Single writer:** final canonical Run state is mutated only by `runwatchd`; CLI/GUI/MCP/agent adapters become local IPC clients.
+2. **SQLite WAL:** `runwatch.db` becomes the canonical durable store. JSONL is migration/export only.
+3. **Run != Attempt:** logical Run identity survives retries/resubmissions; scheduler JobIDs belong to Attempts.
+4. **Execution != observation:** transient SSH/probe failures do not overwrite the last trusted execution state with `unknown/lost`.
+5. **Durable delivery outbox:** terminal execution and agent continuation are separate durable phases; callback failure is retryable.
+6. **Transport × Runner:** `Local × Process`, `SSH(alias) × Slurm`, `SSH(alias) × LSF`.
+7. **Narrow SSH authority:** runwatch uses SSH only for lifecycle operations; arbitrary remote workspace access stays in `pi-ssh-tools`.
+8. **Pi first:** Pi live/offline continuation is the first complete AgentAdapter; other coding agents come later.
+9. **Branch-safe continuation:** Pi binding eventually includes `session_file + session_id + origin_leaf_id`; divergence requires explicit rebind.
+10. **No hidden trust bypass:** unattended agent resume must not silently approve an untrusted project.
+
+## Milestones
+
+| Phase | Scope | Status |
+|---|---|---|
+| R0 | Architecture freeze across runwatch / pi-runs / pi-ssh-tools boundary | **completed 2026-08-31** |
+| R1 | Durable core: real single-instance lock, SQLite canonical store, local IPC foundation, retryable delivery boundary | **completed 2026-08-31** |
+| R2 | Remote Execution v2: Transport × Runner, scheduler adapters, SSH hardening | **completed 2026-09-01 — Slurm/LSF/Local Process, Observation/adaptive batching, OpenSSH trust/ProxyJump/agent policy accepted** |
+| R3 | pi-runs backend migration to runwatch local client | **completed for production remote HPC 2026-08-31 — auto is runwatch-only; legacy requires explicit opt-in** |
+| R4 | Pi live continuation | **real Pi live terminal-delivery acceptance passed 2026-08-31** |
+| R5 | Pi offline continuation via exact-session headless worker | **real exact-session + combined gm00 Slurm/provider-success acceptance passed 2026-08-31** |
+| R6 | Branch lineage / rebind safety | **real same-session `/tree` block + explicit rebind recovery passed 2026-08-31** |
+| R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
+| R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
+| R9 | Additional coding-agent adapters, starting with Codex CLI | planned |
+
+## R0 completion record
+
+Completed:
+
+- Reframed runwatch from a generic watcher into the durable Run lifecycle authority.
+- Frozen the three authority planes: Remote Workspace (`pi-ssh-tools`), Agent Integration (`pi-runs`), Durable Run (`runwatch`).
+- Defined target `Run / Attempt / Event / Observation / Artifact / ContinuationBinding / Delivery` model.
+- Defined `RemoteWorkspaceRef { host_alias, cwd }` as semantic interop only; no cross-package SSH dependency.
+- Chosen `Transport × Runner` instead of conflating remote location with scheduler.
+- Defined Pi live/offline continuation and branch-safe binding as the first end-to-end product gate.
+
+Validation: documentation/architecture phase; code validation belongs to R1.
+
+## R1 current work
+
+### R1a — compatibility durability hardening — completed 2026-08-31
+
+Completed before the SQLite cutover:
+
+- [x] Replaced heartbeat-only `ServeLock` with an OS-released exclusive file lock (`fs2`). A second daemon owner fails immediately; heartbeat remains liveness metadata only.
+- [x] Replaced truncate/rewrite `runs.jsonl` behavior with a locked append-only compatibility journal. Readers collapse records by `run_id` to the latest version.
+- [x] Shared/exclusive store locks now prevent concurrent load/modify/write lost updates in the compatibility layer.
+- [x] Every append is `sync_all()`'d; an interrupted partial final line is ignored while earlier malformed lines remain hard errors.
+- [x] Terminal execution state is persisted before wake side effects.
+- [x] Terminal rows with an unacknowledged delivery are reconsidered on later ticks, so first-attempt wake failure is retryable.
+- [x] Unsupported `OnComplete::Event` now fails closed and remains pending instead of being falsely acknowledged.
+- [x] Added regression tests for daemon lock exclusivity, append-journal latest-state semantics, partial-final-line crash recovery, and callback retry selection.
+
+Validation:
+
+- `cargo fmt` — passed.
+- `cargo check --all-targets` — passed; only existing `russh v0.54.5` future-incompatibility warning remains.
+- `cargo test --all-targets` — **8 passed, 0 failed** (previous project baseline had only 2 tests).
+
+### R1b — SQLite canonical store + read IPC foundation — completed 2026-08-31
+
+Completed:
+
+- [x] `RunStore` now uses `%USERPROFILE%/.runwatch/runwatch.db` as the canonical store.
+- [x] Enabled SQLite WAL mode, `synchronous=FULL`, foreign keys and bounded busy timeout.
+- [x] Existing latest `runs.jsonl` state is imported automatically when the SQLite store is empty; R1a-style partial final lines are tolerated during migration.
+- [x] JSONL is no longer the canonical writer path.
+- [x] Created schema foundations for `runs`, `run_attempts`, `run_events`, `observations`, `deliveries`, `continuation_bindings`, `artifacts`, and `agent_session_leases`.
+- [x] Added protocol-versioned local IPC server to `serve_loop`.
+  - Windows endpoint: `\\.\pipe\runwatch-v1`.
+  - Initial v1 capabilities are deliberately read-only: `hello`, `list_runs`, `get_run`.
+  - Unknown operations fail closed.
+- [x] Added CLI `daemon-status` probe.
+- [x] Ran a live two-process Windows integration check: started `runwatch serve`, connected through the named pipe from a separate CLI process, and received `protocol_version=1`, `storage=sqlite-wal`, and the advertised capabilities.
+
+Validation after R1b:
+
+- `cargo fmt` — passed.
+- `cargo check --all-targets` — passed; existing `russh v0.54.5` future-incompatibility warning remains.
+- `cargo test --all-targets` — **11 passed, 0 failed**.
+- `cargo build -p runwatch-cli` — passed.
+- live named-pipe handshake — passed.
+
+### R1c — daemon-only mutation + explicit Delivery repository — completed 2026-08-31
+
+Landed slices:
+
+- [x] Added versioned daemon IPC mutations for durable remote `submit_run_v2`, continuation rebind/session lease/delivery claim+ack, and scheduler `cancel_run`.
+- [x] Added explicit Delivery rows with deterministic ids, attempt counters, claim expiry, retry/needs-rebind state and last-error persistence for Pi continuation.
+- [x] IPC requests carry correlation ids; the Pi client validates response ids and applies bounded timeouts/cancellation.
+- [x] Server and local probe now honor `RUNWATCH_ENDPOINT`, matching pi-runs' existing client override. Isolated acceptance/parallel test daemons can bind a unique named pipe/Unix socket without contending with the user's normal endpoint.
+- [x] Added daemon-owned bounded `logs` observability. It can only tail the current durable Attempt's known stdout/stderr paths, clamps to 500 lines and 64 KiB per stream.
+- [x] Added daemon-owned `artifacts` inventory for the current durable Attempt. It exposes only runwatch-known lifecycle paths (`script`, `stdout`, `stderr`, `terminal`, `receipt`) and does not become an arbitrary remote-file scanner.
+- [x] `cancel_run` only records a durable `cancel_requested` event after `scancel`/`bkill` succeeds; it does **not** falsely mark the Run Cancelled before scheduler observation confirms terminal state.
+- [x] CLI direct SSH `Ping`/`Refresh`/`Tick`/`Wait` now consume `ssh.alive_interval` and `ssh.cmd_timeout_sec`, matching daemon settings instead of hard-coded defaults.
+- [x] Live two-process named-pipe smoke after the observability mutation slice: pi-runs discovered `logs` and `cancel_run` from the newly built daemon and capability-aware selection chose `runwatch` for both.
+- [x] Added daemon `tick` and snapshot-only `wait_run` IPC operations. `wait_run` observes canonical SQLite state and does not start a second SSH/scheduler polling loop; the daemon remains the only lifecycle poller.
+- [x] Migrated CLI `List`, `Refresh`, `Tick`, and `Wait` to local IPC. CLI `Refresh` requests a daemon tick and then reads the target Run; it no longer opens its own HostPool or mutates SQLite.
+- [x] Added explicit compatibility capability `adopt_run_v1` and migrated the legacy CLI `Submit` command to it. The command is now documented as adopting/registering an existing scheduler Run; durable new scheduler submission remains `submit_run_v2`.
+- [x] CLI Run-state paths now have no direct SQLite writer. `Status` remains read-only diagnostics and `Ping` remains a transport diagnostic rather than Run lifecycle mutation.
+- [x] Replaced post-allocation `BufReader::lines()` size checking with a bounded frame reader. Requests larger than 256 KiB are rejected and the client connection is closed **before** the daemon accumulates an oversized line; an exact-limit frame remains valid.
+- [x] Added daemon `daemon_status` + `set_paused` control state on the same shared `AtomicBool` used by `serve_loop`. A real isolated named-pipe smoke toggled `paused=false -> true -> false` against one daemon PID, proving Pause is daemon-owned rather than GUI-local.
+- [x] Converted the GUI into a pure daemon observer/client: it no longer opens `RunStore`, no longer calls `serve_loop` or takes over polling when the daemon is absent, reads `daemon_status` + `list_runs` over IPC, derives terminal toasts from successive canonical snapshots, and sends Pause through `set_paused`. Daemon-offline UI is explicit and never creates a second scheduler owner.
+- [x] The GUI clientized build passed `cargo check`; because the user's existing `target/debug/runwatch-gui.exe` was live/locked on Windows, full linking was verified safely in an isolated target directory instead of killing the running GUI.
+- [x] Converted MCP Run tools to daemon IPC. `list_runs`, `get_run`, compatibility `submit_run` (`adopt_run_v1`), `tick`, short `wait_run`, `logs`, `artifacts`, and `cancel_run` no longer open `RunStore` or create their own `HostPool`; only read-only SSH alias listing remains local. Invalid runner names now fail closed rather than silently becoming Slurm.
+- [x] Reworked legacy stdio MCP request handling so `tools/call` executes concurrently and responses flow through one async stdout writer. Tool results expose both bounded text and `structuredContent`; a short `wait_run` no longer serializes unrelated tool calls.
+- [x] Real MCP concurrency smoke passed: while one queued Run waited for 3 seconds, `list_runs` returned first in **24 ms** and `wait_run` returned in **3076 ms**; both were successful and carried `structuredContent`.
+- [x] That smoke exposed a real Windows local-IPC race: simultaneous clients could hit `ERROR_PIPE_BUSY (231)` before the daemon created the next named-pipe instance. The Rust local client now retries only that condition for at most one second; daemon-not-found and other errors still fail immediately. Regression coverage records the retry classification.
+- [x] PowerShell test harnessing reconfirmed that its first redirected stdin line can carry a UTF-8 BOM. This was a harness artifact, not an MCP scheduler bug; production MCP framing remains normal UTF-8 JSONL.
+- [x] Hardened the local IPC authorization boundary. Windows named pipes are created with `PIPE_REJECT_REMOTE_CLIENTS` and an explicit DACL granting pipe access only to the current user SID plus `SYSTEM`; focused tests prove the current-user SID is available and an ACL-restricted pipe instance can be created. Unix data directories are tightened to `0700` and the Unix-domain socket to `0600`.
+- [x] Real same-user ACL smoke passed after hardening: an isolated daemon accepted `daemon-status` and `list` from a separate CLI process through the restricted named pipe.
+- [x] Retired legacy shell-string callbacks without breaking historical data import. `RunRecord.on_complete/on_success/on_failure/acked_at` remain deserializable compatibility fields, but `runwatch-engine` no longer contains callback shell execution or process-local polling `wait_run`; hidden CLI `--on-success/--on-failure` flags now fail explicitly before daemon/SSH access. Durable continuation uses explicit Delivery/outbox state only.
+- [x] Final authority scan: CLI/GUI/MCP contain **zero** `RunStore` references; GUI/MCP contain **zero** `serve_loop` references; MCP contains **zero** `HostPool` references. CLI `Status` only computes the ledger path and does not open SQLite.
+- [ ] Full MCP protocol modernization remains intentionally separate from R1c authority migration: the compatibility server still speaks the legacy `2024-11-05` handshake. Upgrade it coherently to the current 2026-07-28 MCP model/SDK and Tasks extension rather than changing only the advertised version.
+
+### R1 round closeout validation — 2026-08-31
+
+- [x] Removed stale README/GUI/engine text that still described `runs.jsonl` as the current ledger.
+- [x] Final `cargo fmt -- --check` — passed.
+- [x] Final `cargo check --all-targets` — passed; only the existing `russh v0.54.5` future-incompatibility warning remains.
+- [x] Final `cargo test --all-targets` after R1c authority/security closeout — **45 passed, 0 failed, 1 real-Pi acceptance ignored by default**.
+
+### R2a — observation fallback + per-host SSH isolation — completed 2026-08-31
+
+Completed:
+
+- [x] Replaced the old sentinel-only probe with a source-tagged probe contract. A configured sentinel is still the fast path, but if it is missing the **same remote command** now falls through to the scheduler instead of producing an unusable `missing -> Unknown` result.
+- [x] Added strict POSIX shell quoting for remote sentinel paths and scheduler JobIDs used by lifecycle probes.
+- [x] Made terminal parsing exact-token / structured-JSON based instead of substring matching, preventing log text such as `not-failed-yet` from becoming a false terminal transition.
+- [x] Slurm observation now queries live state through `squeue` first and falls back to `sacct` accounting state after the job leaves the live queue.
+- [x] Expanded Slurm mapping for `OUT_OF_MEMORY`, `PREEMPTED`, `NODE_FAIL`, `BOOT_FAIL`, `DEADLINE`, `SUSPENDED`, requeue/configuring states and related production outcomes.
+- [x] LSF observation now uses `bjobs -a -o stat` and recognizes `POST_DONE`, `POST_ERR`, and `WAIT` in addition to the earlier live states.
+- [x] Unknown/future scheduler output now preserves the last trusted Run execution state rather than overwriting it with `Unknown`. Full Observation rows remain a later model migration.
+- [x] Reworked `HostPool` from one global session-map mutex held across remote command awaits to a short global map lock plus **per-host session locks**. A slow command on Host A no longer serializes Host B.
+- [x] Added race-safe connection insertion: competing connects reuse the existing per-host session and close the duplicate candidate.
+- [x] Added bounded SSH command execution timeout. The daemon now consumes `ssh.alive_interval` and `ssh.cmd_timeout_sec` from `config.yaml`; those settings were previously defined but ignored by `serve_loop`.
+
+Validation:
+
+- `cargo fmt -- --check` — passed after correcting one Rust literal-escaping typo found by the first formatter run.
+- `cargo check --all-targets` — passed; only the existing `russh v0.54.5` future-incompatibility warning remains.
+- `cargo test --all-targets` — **16 passed, 0 failed**.
+
+### R2b — durable remote submission + fail-closed host keys — completed 2026-08-31
+
+Completed:
+
+- [x] Added first-class `RemoteWorkspaceRef`, `RunResources`, `SubmitRunSpec`, `RunAttemptRecord`, and `RunStatus::Submitting` foundations.
+- [x] Added an atomic SQLite submission-intent transaction: `Run=Submitting`, Attempt 1 and a `submission_intent` Event are committed **before** wrapper deployment or scheduler submission.
+- [x] Added daemon-owned remote submission service for `SSH(alias) × Slurm` and `SSH(alias) × LSF`.
+- [x] Generated lifecycle wrappers live under `<remote cwd>/.runwatch/<run_id>/` and write structured terminal JSON through temp-file + atomic rename while preserving the scientific command exit code.
+- [x] Added bounded, validated resource mapping for Slurm/LSF and deterministic scheduler job names.
+- [x] Added a remote atomic `submission.receipt` guard. If the scheduler accepted a job but the SSH response is lost, retrying the **same run_id** first consumes the receipt instead of blindly submitting a duplicate job.
+- [x] Definite deploy/scheduler failures persist `submission_failed`; transport ambiguity persists `submission_ambiguous` while keeping the Run in `Submitting` for safe same-ID retry.
+- [x] Added versioned IPC capability `submit_run_v2`; the daemon IPC now shares the daemon-owned `Arc<RunStore>` and `Arc<HostPool>` instead of constructing separate control-plane instances.
+- [x] Added a bounded 256 KiB request contract for local IPC; the later R1c framing hardening now rejects oversized requests before the daemon buffers a complete over-limit line.
+- [x] Replaced the old accept-all SSH server-key handler with fail-closed `russh::keys::known_hosts::check_known_hosts()` validation against the user's standard `~/.ssh/known_hosts`, including ProxyJump hops.
+- [x] Propagated the new `Submitting` state through GUI/status projections.
+
+Validation:
+
+- `cargo check --all-targets` — passed after compiler-guided propagation of the new `Submitting` state and SSH handler type.
+- `cargo test --all-targets` — **22 passed, 0 failed**.
+- Existing `russh v0.54.5` future-incompatibility warning remains.
+
+### R2c — effective OpenSSH semantics + scheduler history/observability — in progress
+
+Completed in this slice/current worktree:
+
+- [x] Host-key checking is fail-closed against the user's standard `~/.ssh/known_hosts`, including jump hops; the old accept-all handler is gone.
+- [x] SSH command execution is bounded by `ssh.cmd_timeout_sec`; a timeout invalidates only that Host session.
+- [x] Session synchronization is per Host rather than one global mutex across command awaits.
+- [x] Daemon-owned bounded stdout/stderr tail is exposed as IPC `logs` and pi-runs can consume it.
+- [x] Daemon-owned Slurm/LSF cancel request is exposed as IPC `cancel_run` and pi-runs can consume it.
+- [x] LSF observation now falls back from `bjobs -a` to `bhist -l` when the job has aged out of recent-job visibility; historical `Done successfully`/post-job success map to DONE and exit/post-job-failure events map to EXIT.
+- [x] Declared Host aliases are now resolved through `ssh -G <alias>` before russh connects, so effective OpenSSH HostName/User/Port/IdentityFile/ProxyJump values (including `Host *`/Match-style effective settings) drive the persistent transport instead of the partial parser's value precedence.
+- [x] Effective `IdentityFile` is now plural. runwatch tries configured unencrypted private keys in OpenSSH effective order rather than silently keeping only one IdentityFile.
+- [x] Effective `UserKnownHostsFile` and `HostKeyAlias` are now honored for host-key verification. This fixed a real Windows incompatibility in russh 0.54.5's default known-hosts helper, which searched `%HOME%/ssh/known_hosts` while OpenSSH/cap00 uses `%HOME%/.ssh/known_hosts`. Verification remains fail-closed and uses `check_known_hosts_path` over the effective OpenSSH paths.
+- [x] Fixed SSH channel completion ordering: `Eof` no longer terminates result collection before a later `exit-status`; collection ends on `Close`. Without this, successful remote commands could return correct stdout but `code=None` and be falsely treated as failures.
+- [x] Added typed first-class `ObservationRecord` snapshots keyed by `(run_id, attempt_no)`: `source={local_process,sentinel,scheduler,compatibility,transport}`, `health={fresh,probe_error,unreachable}`, `observed_at`, last trusted `execution_status`, bounded raw state, reason and remote command exit code. Every probe refreshes the snapshot timestamp; `observation_changed` Events are appended only on semantic changes so normal polling does not flood history.
+- [x] Poller semantics now enforce `execution != observation`: local-process probe failures, SSH transport failures, non-zero/missing remote probe exit status and unrecognized scheduler state update Observation health/reason while preserving the last trusted Run execution status. A successful recognized probe marks `fresh` and may advance execution state.
+- [x] `get_run` now returns the current Attempt observation as a backwards-compatible sidecar, `get_observation` is an explicit IPC capability, and `list_runs` includes an observations sidecar for clients that want overview health without changing the existing `runs` array shape.
+- [x] Real isolated smoke passed: Run `obs_smoke_0901` began `running` against a deliberately missing SSH alias; daemon tick reported the transport error but Run stayed **running** while Observation became `health=unreachable`, `source=transport`, with the concrete reason. The real pi-runs client returned the same sidecar and rendered `Runs 1 running · 1 probe issue`.
+- [x] Added resident-loop adaptive polling without weakening explicit control operations. CLI/MCP `tick` still force-probes every live Run; only `serve_loop` uses `tick_due`. A Run with no Observation is always probed immediately. Remote Queued/Submitting remains at the base interval, remote Running uses 2× base, `probe_error` uses at least 2×, and `unreachable` uses at least 4× with a 5-minute cap; Local Process stays at the base interval because local identity checks do not load an HPC login node.
+- [x] Adaptive due decisions are driven by persisted `Observation.observed_at`, so daemon restart does not reset every Run into an immediate high-frequency poll storm. Three focused policy tests cover queued/local conservatism, running/unreachable backoff + cap, and exact due boundaries.
+- [x] Added per-Host **Slurm v2 scheduler batching** for the resident `tick_due` path. Only Runs whose durable Attempt matches `runner=slurm`, Attempt/Run JobID and runwatch-owned terminal path are eligible; legacy adopted Runs and singletons stay on the existing per-Run probe.
+- [x] A batch uses one SSH exec for the Host, checks each runwatch-owned one-line terminal sentinel, then performs exactly one `squeue` query and one `sacct` query for the complete JobID set. Interpretation precedence is terminal → live `squeue` → accounting `sacct`; unknown/missing states become `probe_error` while preserving execution state. If the batch transport fails, all members get `transport/unreachable` and are not immediately retried individually in the same tick.
+- [x] Added parser/command/eligibility tests plus a default-ignored real Slurm acceptance. Explicit cap00→gm00 run passed: two 30-second `runwatch-batch-smoke` Slurm jobs were submitted, one generated batch probe recognized both as queued/running, and cleanup removed both; a follow-up `squeue -n runwatch-batch-smoke` was empty.
+- [x] Extended per-Host batching to **LSF v2 active/recent jobs** without weakening historical correctness. Batchable LSF Runs use one SSH exec with runwatch-owned sentinel fast paths plus one `bjobs -a -noheader -o 'jobid stat'` query for the group. Recognized terminal/active rows are handled in batch; a missing/unrecognized `bjobs` member is intentionally left unhandled so the same tick falls through to the existing per-Run `bjobs -> bhist` aged-out-history fallback.
+- [x] LSF batch-level SSH/command failures update group Observation health and suppress same-tick retry storms, while scheduler-row absence is **not** treated as batch failure. Parser/command/eligibility tests cover the fallback boundary.
+- [x] Real cap00→`gyz-mn02` IBM LSF 10.1 acceptance passed: two 30-second `runwatch-lsf-batch-smoke` jobs were submitted, one generated batch `bjobs` probe recognized both, cleanup removed them, and a follow-up `bjobs -J runwatch-lsf-batch-smoke` returned no live job.
+- [x] Extended host-key trust parity to effective `GlobalKnownHostsFile` in addition to `UserKnownHostsFile`/HostKeyAlias. OpenSSH's Windows `__PROGRAMDATA__` placeholder is expanded to `%PROGRAMDATA%`; global + user files are de-duplicated, missing default files are ignored like OpenSSH, while any existing known-hosts file remains fail-closed on parse/mismatch.
+- [x] Hardened ProxyJump parsing without changing the public `proxy_jump: Vec<String>` UI/MCP wire. Transport now parses `[user@]host[:port]`, bracketed IPv6 with optional port, and raw unbracketed IPv6 host-only forms. A jump alias uses its own effective OpenSSH config; a raw host is resolved via its own `ssh -G` instead of incorrectly inheriting the target's IdentityFiles. Explicit user/port override the effective hop, and the explicit chain is then carried with russh `direct-tcpip`.
+- [x] Added bounded SSH-agent fallback after existing unencrypted effective IdentityFiles. Windows tries the standard OpenSSH agent named pipe and then Pageant; Unix uses `SSH_AUTH_SOCK`. Agent connection and authentication phases are independently capped at 3 seconds. This supports encrypted/private identities already loaded into an agent without introducing another credential database.
+- [x] Final real connection regressions passed with the rebuilt binary: direct `runwatch ping gm00 -> mn01` and ProxyJump `runwatch ping gyz-mn02 -> mn02`. `runwatch-ssh` focused tests are 5/5. cap00's current `ssh-add -l` reports **no identities**, so agent-backed authentication is implemented but cannot honestly be marked as a real-key acceptance on this machine yet.
+- [x] Reworked alias discovery to recurse OpenSSH `Include` files instead of pretending the discovery parser is also a connection-config parser. `parse_ssh_config_at` now only collects exact `Host` tokens; relative/absolute/`~` Include patterns are expanded with `glob 0.3.4`, nested includes recurse, canonical-path visitation breaks include cycles, and wildcard/negated Host patterns are intentionally excluded. Every discovered alias is still resolved through `ssh -G`, so OpenSSH remains the authority for actual connection semantics.
+- [x] Recursive Include focused acceptance passed with a synthetic `config.d/*.conf -> nested.conf -> ../config` cycle: discovered aliases were exactly `cluster, deep, direct, exact-two`, with wildcard/negated/bracket patterns excluded. Full workspace remained **74 passed / 0 failed / 5 ignored** and freshly rebuilt `runwatch hosts` still resolved the current **52 configured aliases**, including existing ProxyJump chains.
+- [x] Added exact `IdentitiesOnly=yes` unattended semantics. Effective `ssh -G` now carries `identitiesonly`; direct unencrypted IdentityFiles are tried first, while agent/Pageant fallback is filtered to public keys derived from those configured identities. Encrypted private keys are never prompted for or stored by runwatchd: a matching public identity is taken from the key's readable public form or adjacent `.pub`, and the private key must already be loaded into OpenSSH agent/Pageant. If no matching public identity is available, authentication fails closed with explicit remediation.
+- [x] Frozen the host-key trust policy in code: runwatch intentionally does **not** inherit trust-relaxing client modes such as `StrictHostKeyChecking=no/accept-new`. `KnownHostsHandler` accepts only keys already present in effective Global/UserKnownHostsFile. A regression test proves that a valid server public key with no existing known-hosts entry is rejected.
+- [x] Final SSH-focused matrix is **7/7** and full workspace is **76 passed / 0 failed / 5 ignored**. Rebuilt direct/ProxyJump pings remained green (`gm00 -> mn01`, `gyz-mn02 -> mn02`). cap00's current `ssh-add -l` reports no identities, so a real agent-loaded encrypted-key acceptance remains environment-gated rather than falsely reported as passed.
+
+R2c is complete. A real agent-loaded encrypted-key smoke should be added when cap00 has a test identity in OpenSSH agent/Pageant, but the unattended policy and filtering implementation are no longer missing.
+
+
+### R2d — Windows Local × Process durable lifecycle — lifecycle acceptance passed 2026-09-01
+
+Completed:
+
+- [x] Added first-class `RunnerKind::Process` to daemon-owned `submit_run_v2`. Local submission commits `Run=Submitting`, Attempt and optional ContinuationBinding before process launch.
+- [x] Replaced the old Pi/PowerShell `Start-Job` durability assumption with a detached Windows process wrapper under `<cwd>/.runwatch/<run_id>/`. The wrapper writes `started.json`, waits for a durable `armed` boundary, executes the science command, captures stdout/stderr and atomically writes `terminal.json`.
+- [x] Local handles encode `(PID + Windows process creation time)` as `local:<pid>:<creation-time>`, so daemon restart cannot confuse a recycled PID with the original science process. Recovery consults durable Attempt metadata, `submission.receipt`, then `started.json`.
+- [x] Local logs, artifact inventory, observation and cancellation use the same Run surface. Cancellation is persisted as a request first; final terminal state is still observation-driven.
+- [x] Local process creation requires Windows Job breakaway. If the host Job Object rejects breakaway (`ERROR_ACCESS_DENIED`), runwatch now fails closed with an explicit explanation instead of launching a child that could disappear with the daemon. The error points operators to the resident `runwatch supervise` / Task Scheduler path.
+- [x] A direct WebCodex-hosted daemon smoke intentionally hit this fail-closed boundary (`Access is denied`, os error 5), demonstrating that a restricted parent Job cannot silently downgrade durability.
+- [x] Representative resident-path acceptance then passed through a disposable real Task Scheduler supervisor: supervisor PID **83580** launched daemon PID **16496**; the real pi-runs runwatch client submitted Run `local_durable_0901` with stable process handle **`local:40660:01dd39ae4307fb57`**; daemon PID 16496 was terminated while the 8-second science command was running; supervisor created daemon PID **86768**; the detached science process still wrote `result.txt=local-process-ok`; the reopened canonical store converged to `succeeded`.
+- [x] The same pi-runs client read `stdout=science-finished`, empty stderr and lifecycle artifacts `script/stdout/stderr/terminal/receipt`. Disposable task, supervisor/daemon processes and temporary tree all returned to zero after cleanup.
+
+Acceptance boundary: this proves the **Local Process execution lifecycle** survives daemon death on the supported resident Windows path and is reachable through the default pi-runs runwatch client. Pi live/offline exact-session continuation is the same generic Delivery pipeline already accepted independently; one combined local-Process + real-provider Pi continuation Run remains useful release-hardening, not an unresolved process-durability mechanism.
+
+### R4/R6 — durable Pi live continuation + branch-safe rebind — implementation landed 2026-08-31
+
+Completed:
+
+- [x] Added `ContinuationBinding` to `SubmitRunSpec` and persisted it in the **same SQLite transaction** as `Run=Submitting`, Attempt 1 and the `submission_intent` Event.
+- [x] Binding captures the agent kind, Pi session id/session file, origin leaf, project root and exact `RemoteWorkspaceRef`. Run compatibility projections also carry session/agent/project fields.
+- [x] Added daemon-side `AgentSessionRegistration` leases with owner-instance identity and bounded TTL. A second live Pi instance cannot acquire the same `agent_kind + session_id` while the first lease is valid.
+- [x] Added deterministic terminal Delivery outbox rows (`<run_id>:a<attempt>:terminal`) and `continuation_pending` Events. Re-ticking an already-terminal Run recreates a missing Delivery if needed, so daemon restart does not lose completion work.
+- [x] Added pull-based live delivery operations: `register_agent_session`, `release_agent_session`, `claim_deliveries`, `delivery_status`, and `ack_delivery`.
+- [x] Claims are bounded, lease-protected, attempt-counted and expire back to retryable pending state. Delivery outcomes support `delivered`, `retry`, and `needs_rebind`.
+- [x] Added explicit `rebind_continuation`: it atomically replaces the Run binding, writes a `continuation_rebound` Event, and moves that Run's `needs_rebind` deliveries back to pending.
+- [x] Added IPC capabilities for all live-bridge/rebind operations; unknown operations continue to fail closed.
+- [x] Cross-project live named-pipe smoke passed without submitting compute:
+  - Pi client discovered `submit_run_v2`, lease, delivery-status/claim/ack, and rebind capabilities.
+  - first owner acquired the lease;
+  - delivery status returned all-zero clean state;
+  - second owner for the same Pi session was rejected;
+  - after release, the second owner acquired and released the lease successfully.
+
+Validation:
+
+- `cargo fmt -- --check` — passed.
+- `cargo check --all-targets` — passed; only the existing `russh v0.54.5` future-incompatibility warning remains.
+- `cargo test --all-targets` — **26 passed, 0 failed**.
+- `cargo build -p runwatch-cli` — passed before the live named-pipe smoke.
+
+#### R3/R4 closeout — production backend + dedicated live Pi gate — completed 2026-08-31
+
+- [x] pi-runs `PI_RUNS_BACKEND=auto` no longer silently falls back to `~/.pi/runs` when runwatchd is offline or lacks a capability. Default tools now fail closed against the single durable authority; `PI_RUNS_BACKEND=legacy` is explicit migration compatibility only.
+- [x] This intentionally removes default local/PowerShell `Start-Job` behavior until runwatch gains first-class Local × Process; a known non-durable compatibility path is not presented as production continuation.
+- [x] pi-runs backend regression after the change: **32 passed, 0 failed, 1 real-Pi live gate skipped by default**; real Pi RPC with a missing runwatch endpoint emitted `Runs unavailable` and exited normally.
+- [x] Dedicated real Pi live-terminal gate passed: an isolated fake runwatch derived the binding from Pi's real registered session, delivered one synthetic terminal completion, Pi persisted `runwatch/completion`, emitted `agent_start`, and the live bridge acked `delivered`. Explicit gate: **1 passed, 0 failed** in about 2.3s.
+
+## R5/R6 — offline exact-session continuation + branch-safe recovery — success and `/tree` rebind acceptance passed; combined HPC/crash gates next
+
+Implemented:
+
+- [x] Terminal Pi Deliveries with no fresh live lease become reservable offline `AgentInvocation` records after a bounded grace period.
+- [x] Offline dispatch shares the same exclusive `agent_kind + session_id` execution lease used by live Pi, preventing concurrent writers to one Pi session.
+- [x] Worker launch uses the recorded exact session file/project root and pi-runs adapter through Pi RPC mode; Windows launch uses `CREATE_NO_WINDOW`.
+- [x] The exact Delivery is injected through a bounded base64 bootstrap environment value rather than a fabricated user prompt.
+- [x] pi-runs reuses the same project-trust and branch-lineage checks. Untrusted or mismatched resume is blocked as `needs_rebind`; no implicit approve/trust bypass exists.
+- [x] Offline completion is not acknowledged merely because Pi spawned. pi-runs waits for its injected agent turn to reach `agent_settled`, then durably acks and shuts down the RPC worker.
+- [x] Unacked/failed worker exit is requeued by the durable invocation/delivery state machine; launch count/runtime are bounded.
+- [x] Fixed a Windows launcher blocker discovered by real cap00 testing: `std::process::Command::new("pi")` returned `program not found` because Pi is exposed by Volta shell shims (`pi.cmd` / extensionless shell script), not a native `pi.exe`. Offline dispatch now resolves a native `pi.exe` first or a native `volta.exe` launcher with prefix `run pi`; it deliberately refuses to rely on `.cmd/.bat` shell shims for unattended session/project paths. `RUNWATCH_PI_EXECUTABLE` remains available for an explicit native launcher override.
+- [x] Added Windows launcher regression tests: native `pi.exe` takes priority, Volta is a safe native fallback, and a lone `pi.cmd` is not treated as a native executable.
+- [x] Added `RUNWATCH_DATA_DIR` override so fault/acceptance daemons can use an isolated SQLite/lock/heartbeat directory without touching the user's normal `~/.runwatch` state.
+
+Partial real Pi 0.84.4 acceptance completed on cap00:
+
+- [x] Created an isolated Pi RPC session in a temporary `--session-dir`, ran a minimal agent turn, observed the official `agent_settled` event, and obtained the exact `sessionFile/sessionId` through `get_state`.
+- [x] Started a second Pi RPC process with `--session <exact sessionFile>` and verified it reopened the same session id/file with the expected message count rather than creating a new session.
+- [x] Verified cap00's native `volta.exe run pi --version` launch path and confirmed Pi 0.84.4. The full daemon offline dispatcher still needs end-to-end Delivery bootstrap acceptance below.
+
+Real gm00 Slurm + offline-failure acceptance completed on an isolated daemon/store:
+
+- [x] Started runwatch with `RUNWATCH_DATA_DIR=%TEMP%\\runwatch-r5-acceptance`, leaving the normal user store untouched.
+- [x] Submitted a real minimal Slurm Run through `submit_run_v2`: `r5-smoke-20260831-1016`, JobID **31732**, `/tmp`, `echo RUNWATCH_R5_OK`, 1 CPU, 1 minute limit. The daemon persisted Run/Attempt/ContinuationBinding before scheduler submission.
+- [x] The daemon observed the real scheduler path `Queued -> Succeeded` and created deterministic Delivery `r5-smoke-20260831-1016:a1:terminal`.
+- [x] With no live Pi lease, runwatch reserved and launched an offline AgentInvocation, reopened the exact Pi session and pi-runs persisted a `runwatch/completion` custom message containing the correct Run, JobID, workspace and invocation id.
+- [x] The continuation model then encountered a real provider-side HTTP 429. The Delivery remained unacknowledged while Pi was still in its retry lifecycle; it was **not** falsely marked delivered.
+- [x] After deliberately terminating only the isolated offline worker to simulate worker loss, runwatch observed the process exit and durably moved Delivery to `retrying`, Invocation to `failed`, recorded `agent_invocation_exit`, and preserved the already-succeeded Run. This validates the crash/retry path across a real Slurm completion.
+- [x] The isolated acceptance daemon was allowed to terminate after the test window so it could not keep relaunching the retryable test Delivery.
+
+Provider-successful exact-session completion acceptance also passed on cap00 without touching the normal runwatch store:
+
+- [x] Added `runwatch-core/examples/r5_offline_seed.rs`, which refuses to run unless `RUNWATCH_DATA_DIR` is set and creates only a synthetic terminal Run/Attempt/Delivery in that isolated SQLite store.
+- [x] Created a fresh real Pi 0.84.4 session under a temporary `--session-dir` using `localCPA/gpt-5.6-luna`, captured its exact persisted session file/id and origin leaf, then fully exited the seed Pi process.
+- [x] The first full daemon rerun exposed a real synchronous lifecycle race: `triggerTurn` could emit `agent_start` before `pi.sendMessage()` returned, while pi-runs marked `offlineBootstrapSent` only afterwards. The model turn completed but Delivery remained `delivering` forever. pi-runs now arms that lifecycle gate **before** `triggerTurn` and resets it only if injection itself throws.
+- [x] Repeating the same isolated gate after the fix produced `pending -> delivering -> delivered`, AgentInvocation `running -> completed`, and final session lease count `0`.
+- [x] The durable event sequence includes `continuation_pending -> continuation_delivered -> agent_invocation_exit`; the exact resumed JSONL contains exactly one `runwatch/completion`, and the completion turn ended with assistant `stop` on `gpt-5.6-luna` without resubmitting the completed Run.
+- [x] The synthetic workspace intentionally used a nonexistent Host alias, so `runs_logs` / `ssh_activate` failed inside the resumed research turn as expected; that fixture noise did not affect continuation settlement and demonstrates that workspace-access failure is not confused with Delivery transport failure.
+- [x] Added a reusable default-ignored `real_pi_offline_continuation_acceptance` test. With explicit isolated `RUNWATCH_DATA_DIR`, unique `RUNWATCH_ENDPOINT`, real Pi session file/id/origin leaf, adapter path and project root, it starts an isolated IPC server, creates a synthetic terminal Delivery, launches the actual offline Pi RPC worker and asserts durable `delivered`. A cap00 Pi 0.84.4 run using a normal Pi-created session and `cliproxyapi/gpt-5.4-mini` passed in **63.18 s**.
+- [x] A second real Slurm success attempt (JobID **31733**) verified deeper three-project integration: offline Pi resumed, `runs_status`/`runs_logs` came from runwatch, and the automatically loaded `pi-ssh-tools` proceeded with `ssh_read`/`ssh_bash` on `gm00:/tmp`. This attempt exposed a migration seam where `runs_harvest` fell back to legacy because runwatch lacked `artifacts`; the new daemon `artifacts` capability closes that seam before the final success rerun.
+
+Real same-session `/tree` divergence + explicit rebind acceptance now also passes on cap00:
+
+- [x] Used Pi 0.84.4's own `SessionManager.branch()` + append-only entry API to move the active leaf inside the **same session JSONL**, proving a real `/tree`-style divergence rather than a new-session `/fork`.
+- [x] A Delivery bound to the abandoned origin leaf was rejected as `needs_rebind`; the offline Invocation became `blocked`, the session lease returned to zero, and the wrong branch received **zero** `runwatch/completion` messages.
+- [x] That gate exposed an early-shutdown handshake bug: branch/trust rejection can happen in `session_start` before any agent turn, while Pi RPC waits on stdin. runwatch now keeps RPC stdin open only while Delivery=`delivering` and closes it after any durable terminal delivery outcome, allowing `ctx.shutdown()` to end blocked workers without `process.exit()`.
+- [x] The first real `runs_rebind` recovery exposed a durable snapshot bug: `continuation_bindings` changed but `deliveries.payload_json.binding` still held the abandoned leaf, so the requeued Delivery immediately blocked again. Rebind now atomically rewrites every unclaimed pending/retrying/needs_rebind Delivery snapshot to the new binding and refuses rebind while any Delivery is already `delivering`.
+- [x] Repeating the same real blocked Run after the fix succeeded: Delivery attempts reached 3, the binding table and Delivery snapshot both used new origin leaf `0a5a03ee` instead of old `d277fda1`, exactly one completion message was delivered, lease count returned to zero, Pi ended with `stop`, and the same Delivery became `delivered`.
+
+Combined real HPC/provider-success acceptance is now green:
+
+- [x] Started a fresh isolated runwatch daemon/store and a fresh real Pi 0.84.4 session, then submitted Run `r5_combined_14bed66b438b` through the actual `runs_submit` tool to `gm00:/tmp`; Slurm assigned JobID **31734**.
+- [x] The initial Pi process reached `agent_settled`, persisted its exact session file, then exited completely. The daemon independently observed the scheduler Run as `succeeded`, created the pending Delivery and later launched the exact-session offline Pi worker.
+- [x] The real Delivery transitioned `pending -> delivering -> delivered` on the first attempt; AgentInvocation transitioned `running -> completed`; the exact-session lease returned to zero; durable events were `submission_intent -> scheduler_submitted -> continuation_pending -> continuation_delivered -> agent_invocation_exit`.
+- [x] The same resumed Pi JSONL received exactly one `runwatch/completion`. After that completion it actually called `runs_status`, `runs_logs`, `runs_harvest`, `ssh_activate`, `ssh_read`, and `ssh_bash` against the recorded `gm00:/tmp` workspace, then ended with assistant `stop`.
+- [x] The scientific smoke command wrote `/tmp/runwatch-combined-c4934ac988.txt` containing the Run-specific success marker, so this single gate covers durable scheduler submission, terminal observation, offline exact-session restoration, runwatch observability/artifact inventory, explicit pi-ssh-tools workspace activation and real remote result inspection without a human “continue”.
+
+Acceptance still required:
+
+- [x] Clean **combined real Slurm + provider-success** acceptance passed with gm00 JobID **31734**, exact-session offline relaunch, successful settlement, runwatch status/logs/artifacts and explicit pi-ssh-tools result inspection in one Run.
+- [x] Real same-session `/tree` divergence + explicit `runs_rebind` recovery passed. Pi RPC `/fork` was also examined and correctly creates a new session file/id, so exact-session delivery to the original file is not a lineage violation.
+- [x] Daemon/process crash correctness matrix passed across deterministic reservation/ack windows plus real Windows daemon kill/restart. Multi-hour soak remains a durability/performance release test, not an unresolved state-machine window.
+
+### R7a — lease-aware daemon/process crash recovery — implementation landed 2026-08-31
+
+Completed:
+
+- [x] Added `offline_invocation_is_owned(invocation_id, delivery_id, owner_instance_id)`: an offline worker is authoritative only while its Invocation is `starting|running`, its exact Delivery is still `delivering`, and the same owner holds an unexpired Pi session lease.
+- [x] Added IPC capability `verify_offline_invocation`; pi-runs now revalidates that ownership after lease registration and **before** injecting an offline completion. A late worker whose old invocation was reconciled/requeued shuts down without injecting stale completion text.
+- [x] Added `reconcile_orphaned_agent_invocations`: only Invocation rows in `starting|running` with no active same-owner lease are reconciled. `delivering` becomes retrying, delivered becomes completed without requeue, needs_rebind becomes blocked, and stale matching leases are removed with an `agent_invocation_reconciled` event.
+- [x] Daemon startup waits a 30-second orphan reconnect grace before reconciliation. A surviving old Pi worker refreshes its same owner lease every 10 seconds and therefore remains authoritative; recovery only takes over when that lease truly stays expired.
+- [x] Recovery is independent of scheduler tick success and then feeds the normal bounded offline dispatcher.
+- [x] Unit coverage now includes reserve-before-spawn (`starting` orphan), spawn-before-ack (`running` orphan), active worker non-preemption, exact ownership verification, and ack-before-process-exit (`delivered` orphan -> completed without duplicate Delivery).
+
+### R7b — session-side continuation idempotency — acceptance passed 2026-08-31
+
+Completed across pi-runs + runwatch:
+
+- [x] Successful offline `agent_settled` now persists a branch-local Pi custom session entry `runwatch/completion-settled` **before** attempting the runwatch `delivered` ack. The receipt is extension state only and is not sent back into LLM context.
+- [x] A restarted worker inspects the exact current branch before injection. If the settlement receipt already exists, or the original `runwatch/completion` is already followed by a persisted terminal assistant `stop`, it repairs/acks the durable Delivery without creating a second completion turn.
+- [x] If the original completion exists but the prior turn is incomplete or failed, pi-runs sends `runwatch/completion-recovery` to continue the existing context rather than duplicating the original completion message.
+- [x] Real isolated replay acceptance passed: after a successful exact-session continuation, the SQLite Delivery was deliberately rewound to `retrying` to model “Pi settlement receipt persisted but runwatch ack was lost”. A second offline Invocation raised Delivery attempts from 1 to 2 and restored `delivered`, while the Pi session remained at **1 completion message, 0 recovery messages, 1 settlement receipt**, both Invocations completed and the lease returned to zero.
+
+### R7c — real Windows daemon kill/restart + live HPC continuation — passed 2026-08-31
+
+Two real process-level gates close the restart matrix:
+
+- [x] **Injected-before-settled daemon kill:** after a real headless Pi worker had persisted the original `runwatch/completion` but before settlement, daemon PID 83840 was force-killed. The old worker exited with the parent stdin pipe, its Invocation was reconciled to failed, a second Invocation took Delivery attempt 2, and the exact session finished `delivered` with **1 original completion + 1 recovery message + 1 settlement receipt**, no lease and no surviving worker process.
+- [x] **Real remote scheduler restart:** Run `r7_hpc_a1640dc494c6`, gm00 Slurm JobID **31735**, was confirmed `running` when daemon PID 81212 was force-killed. After a 7-second local daemon outage, the same SQLite store/poller resumed; the remote job continued independently, became `succeeded`, then exact-session offline continuation delivered on attempt 1 and the Invocation completed with lease count 0.
+- [x] The resumed Job 31735 session contained exactly one completion + one settlement receipt and actually executed `runs_status`, `runs_logs`, `ssh_activate`, `ssh_read`, and `ssh_bash` against `/tmp/runwatch-r7-7c0600a7e9.txt`, then ended with assistant `stop`.
+- [x] Combined with repository fault tests for reserve-before-spawn (`starting` orphan), spawn-before-ack (`running` orphan), active-worker non-preemption, and ack-before-process-exit (`delivered` orphan -> completed), every identified durable crash window now has deterministic or real-process evidence.
+
+R7 functional correctness is therefore closed. A multi-hour scheduler/daemon soak should still be run before a production release, but it is no longer masking an unknown recovery transition.
+
+### R8a — Windows resident Task Scheduler service + GUI/service split — implementation landed 2026-08-31
+
+Completed:
+
+- [x] Fixed the old autostart semantic bug: the Startup-folder `.cmd` launched only `runwatch-gui.exe`, but the GUI is now a pure daemon client and therefore could not guarantee a resident scheduler owner after logon.
+- [x] Split GUI autostart from daemon service lifecycle. GUI Startup now uses `runwatch-gui.cmd`; the old `runwatch.cmd` is still recognized/removed for migration compatibility. CLI `autostart` now manages the daemon Task Scheduler task, while the GUI exposes separate `Keep runwatchd running` and `Start GUI with Windows` toggles.
+- [x] Established the current-user Task Scheduler integration (`InteractiveToken`, `LeastPrivilege`, `StartWhenAvailable`, `MultipleInstancesPolicy=IgnoreNew`, no battery stop, no execution time limit). The original direct `runwatch.exe serve` + `RestartOnFailure` assumption was later **superseded by R8c real fault injection**; Windows did not restart an action that had started successfully and later exited nonzero.
+- [x] Registration uses native `schtasks.exe` with no PowerShell registration script and no console window. The final task action is `runwatch.exe supervise --interval 20`; installation starts the supervisor immediately, and the supervisor waits rather than competing when another fresh daemon already owns the ServeLock.
+- [x] A real cap00 Task Scheduler smoke caught a Windows-specific encoding failure (`unable to switch the encoding`) that unit/schema checks could not see. Task XML is now written as UTF-16LE with BOM and `encoding="UTF-16"`.
+- [x] The registration smoke now round-trips the final resident contract: `TimeTrigger` with `PT1M` reconciliation, `MultipleInstancesPolicy=IgnoreNew`, `supervise --interval 20`, and no misleading `RestartOnFailure` dependency. Task Scheduler may normalize default XML fields on readback, so the gate checks semantic fields rather than byte-for-byte XML.
+- [x] `runwatch autostart` read-only status passed on cap00 and reported `daemon=disabled task=runwatchd  gui_autostart=disabled`, proving the acceptance did not silently install a persistent production task.
+- [x] GUI service-menu changes fully linked in an isolated target directory so the user's existing GUI process did not need to be terminated; the isolated target directory was cleaned afterwards.
+
+### R8c — Windows supervisor + real resident fault recovery — completed 2026-08-31
+
+R8c deliberately faulted the real installed-task lifecycle and changed the architecture based on observed Windows behavior:
+
+- [x] **Negative acceptance:** the original direct scheduled `serve` process really started (first observed daemon PID 63656), was force-killed, and the task returned `Last Result=1`; after 90 seconds Task Scheduler was `Ready` with no second daemon PID. This disproved the assumption that `<RestartOnFailure>` is a general watchdog for an action that started successfully and later died.
+- [x] **Windows path bug found and fixed:** canonicalized paths such as `\\?\E:\...\runwatch.exe` and `\\?\C:\Windows\System32\cmd.exe` failed when consumed by Task Scheduler/cmd. Task action paths now strip Win32 verbatim prefixes (`\\?\C:\... -> C:\...`, `\\?\UNC\... -> \\...`) with unit and real registration coverage.
+- [x] Added `runwatch supervise --interval N`. The supervisor owns only process lifecycle — never `RunStore`, SSH or scheduler state — and has its own exclusive lock/pid file. It waits behind a fresh pre-existing daemon instead of competing for the ServeLock.
+- [x] Managed `serve` children are placed in a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so ending/crashing the supervisor cannot leave an orphan daemon. Child restart uses bounded `1/2/5/10/30s` backoff and resets after a stable run.
+- [x] Task Scheduler is now a coarse **reconciler**, not the daemon watchdog: a one-minute `TimeTrigger` repeatedly requests `supervise`, while `IgnoreNew` suppresses duplicates; the logon trigger and explicit install-time `/Run` provide immediate/session startup. If the supervisor dies, the next reconciliation starts a new one.
+- [x] **Real child-crash acceptance:** Task Scheduler started the disposable supervisor; force-killing `serve` PID **74640** produced ready `serve` PID **38208** on the same isolated IPC endpoint within seconds.
+- [x] **Real supervisor-crash acceptance:** force-killing supervisor PID **55056** caused Task Scheduler reconciliation to create supervisor PID **11544**; the old child PID **38208** disappeared through the Job Object and the new supervisor created ready daemon PID **85204**. The full two-layer acceptance passed in **62.45s**.
+- [x] Earlier acceptance also independently demonstrated the Job Object boundary: killing an identified orphan supervisor PID 17968 left child PID 82076 already gone, confirming child teardown on supervisor handle closure.
+- [x] Disposable `runwatch-service-smoke-*` / `runwatch-task-smoke-*` tasks, R8c processes and temporary directories were explicitly checked and returned to zero after cleanup.
+
+### R8b — MCP 2026-07-28 SDK/Tasks/typed-output modernization — completed 2026-08-31
+
+Completed:
+
+- [x] Deleted the handwritten stdio JSON-RPC MCP server and migrated `runwatch-mcp` to the official Rust SDK `rmcp 3.1.4` with stdio transport, `ToolRouter`, `TaskManager`, SDK protocol negotiation, and SDK-owned legacy initialize compatibility.
+- [x] The SDK server advertises MCP `2026-07-28` through `server/discover` while still negotiating the legacy `2024-11-05 initialize` flow for older clients; no manual protocol-version string shim remains.
+- [x] Preserved the nine public tools (`list_runs`, `get_run`, `list_hosts`, compatibility `submit_run`, `tick`, `wait_run`, `logs`, `artifacts`, `cancel_run`) while keeping runwatchd as the sole Run/scheduler authority.
+- [x] Added current structured tool results with both human-readable text and `structuredContent`, plus explicit typed `outputSchema` for **9/9** tools. Success schemas exactly follow the existing daemon wire shapes and are unioned with `{error:string}` so structured tool errors also conform.
+- [x] Added MCP tool annotations: observation/list/log/artifact tools are marked read-only where appropriate; scheduler cancellation is destructive; state-refresh/submission remain non-read-only without pretending to be destructive.
+- [x] Implemented bounded long-wait semantics: `timeout_sec <= 60` remains a normal synchronous tool; waits above 60 seconds require the Tasks extension and are capped at 86400 seconds. Without Tasks, long wait fails closed immediately instead of silently truncating or blocking the stdio control plane.
+- [x] MCP Task cancellation cancels only the **wait handle**. It never sends `cancel_run` and never changes durable Run state; scientific cancellation remains an explicit separate tool.
+- [x] Real raw-stdio 2026-07-28 smoke passed: Discovery advertised 2026 + Tasks, all 9 tools were listed, a 61-second wait without Tasks failed closed in **3 ms**, a 120-second wait with Tasks returned `resultType=task` in **1 ms**, `tasks/get` reported working, `tasks/cancel` settled cancelled, and the durable Run remained `queued`.
+- [x] Real raw-stdio legacy compatibility smoke passed: `initialize` negotiated `2024-11-05`, `tools/list` still returned all 9 tools, and true stdin EOF shut down the SDK server naturally with exit code 0.
+- [x] Real typed-output wire smoke passed after the final metadata build: `tools/list` returned `outputSchema` for **9/9** tools, success/error unions were visible for list/cancel surfaces, and actual `list_runs/get_run` structuredContent matched the documented Run fields.
+- [x] `runwatch-mcp` focused tests: **4 passed, 0 failed** (2026 support, long-wait dispatch/bounds, tool roster, outputSchema completeness).
+- [x] Cross-project Pi regression remained **31/31** after the MCP SDK migration, confirming the native `pi-runs -> runwatchd` primary path is unaffected.
+
+Remaining R8:
+
+- [x] MCP modernization completed in R8b with `rmcp 3.1.4`, 2026-07-28 Discovery/Tasks, legacy negotiation, 9/9 typed outputSchema and real stdio wire acceptance.
+- [x] Installed-task resident start/recovery acceptance completed in R8c, including child crash, supervisor crash, Task Scheduler reconciliation and Job Object cleanup.
+- [ ] Multi-hour resident daemon/HPC soak remains release hardening rather than a state-machine correctness blocker.
+
+### Current round validation — 2026-09-01
+
+- `cargo fmt -- --check` — passed after the final R8c supervisor/Task Scheduler lifecycle changes.
+- `cargo check --all-targets` — passed; only the existing `russh v0.54.5` future-incompatibility warning remains.
+- `cargo test --all-targets` — **76 passed, 0 failed, 5 ignored by default** after the 2026-09-01 R2c SSH-policy closeout. The ignored gates are real Pi offline continuation, real Windows Task Scheduler XML registration, real two-layer resident fault acceptance, real gm00 Slurm batch acceptance, and real gyz-mn02 LSF batch acceptance; all non-Pi environment gates were explicitly run green in this round, and the real Pi gate already has prior acceptance evidence.
+- New focused coverage includes Local Process PID+creation-time identity, started/armed/atomic-terminal protocol, local bounded logs, supervisor breakaway semantics, and explicit fail-closed diagnostics when Windows denies durable Job breakaway, in addition to the existing submission/probe/delivery/offline tests.
+- `cargo build -p runwatch-cli` — passed; live daemon + pi-runs capability smoke confirmed `logs_backend=runwatch` and `cancel_backend=runwatch`.
+- Isolated dual-process R1c CLI smoke — passed: daemon-backed `list`, `tick`, `wait missing` and `adopt_run_v1` all behaved through a unique `RUNWATCH_ENDPOINT`; `adopted-smoke` was visible to a separate CLI `list` process.
+- Cross-project short-wait smoke — passed: pi-runs `auto` discovered `wait_run`, selected the runwatch backend and received canonical daemon error `unknown run missing-run`, proving the newly advertised capability is wired rather than a stale client stub.
+- Real cap00 OpenSSH semantic smoke: `cargo run -p runwatch-cli -- hosts` — passed and resolved 50+ actual aliases/effective HostName/User/Port/ProxyJump values through `ssh -G`.
+- Real cap00 lifecycle-transport smoke: freshly rebuilt `runwatch ping gm00` — **passed**, returning `runwatch-ok` and remote hostname `mn01`. This exercises effective `ssh -G`, actual UserKnownHostsFile verification, authentication and SSH exec result collection.
+- Final SSH-parity direct/ProxyJump regression — **passed** with rebuilt code: `runwatch ping gm00 -> mn01` and `runwatch ping gyz-mn02 -> mn02`; the latter exercises effective jump-host resolution plus russh `direct-tcpip`. `IdentitiesOnly=yes` agent filtering and encrypted-key non-interactive policy are implemented and covered structurally; cap00's OpenSSH agent currently has no identities, so agent-auth real-key acceptance remains environment-gated.
+- Real cap00→gm00 Slurm batch acceptance — **passed**: one russh batch command mapped two short live Slurm jobs using the generated sentinel/squeue/sacct protocol in 2.47s; test cleanup cancelled both and follow-up `squeue` was empty.
+- Real cap00→gyz-mn02 LSF batch acceptance — **passed** on IBM LSF 10.1: one generated `bjobs` batch mapped two short live jobs in 7.17s, `bkill` cleanup ran before assertions, and follow-up `bjobs -J runwatch-lsf-batch-smoke` was empty.
+- R8a/R8c real Windows Task Scheduler round-trip — **passed**: unique temporary task create/query-XML/delete verified TimeTrigger reconciliation + `supervise --interval 20`; CLI autostart status remained disabled afterwards.
+- R8c real resident fault acceptance — **passed**: `serve 74640 -> 38208` under the same supervisor, then `supervisor 55056 -> 11544` via Task Scheduler reconciliation with old child `38208` replaced by ready child `85204`; total 62.45s.
+- Independent 2026-09-01 R8c rerun — **passed** in 63.36s: `serve 81092 -> 27088`, then `supervisor 82892 -> 27064` with old child `27088` replaced by ready child `86284`; post-test disposable tasks/processes/temp were all zero.
+- R8c final system cleanup check — **passed** after removing one pre-fix orphan from an earlier acceptance round: zero disposable scheduled tasks, zero R8c `runwatch.exe` processes, zero R8c temp directories.
+- R8a GUI full link build — **passed** in an isolated target directory and cleaned after validation.
+- R8b real MCP 2026-07-28 stdio smoke — **passed**: Discovery/Tasks, 9 tools, no-Tasks fail-closed, Task create/get/cancel, durable Run unaffected.
+- R8b typed-output stdio smoke — **passed**: 9/9 `outputSchema`, structuredContent success path, success-or-error schema unions.
+- R8b legacy MCP smoke — **passed**: 2024-11-05 initialize negotiation, 9 tools, true stdin EOF -> natural exit 0.
+- `pi-runs` current cross-project regression — **35 passed, 0 failed, 1 real-Pi live gate skipped by default**.
+- Observation-aware pi-runs regression — **37 passed, 0 failed, 1 real-Pi live gate skipped by default**; live isolated smoke preserved `Run=running` while surfacing `health=unreachable/source=transport` as `Runs 1 running · 1 probe issue`.
+- Final read-only service status — `daemon=disabled task=runwatchd  gui_autostart=disabled`; no production task was installed by acceptance testing.
+
+## Known transitional debt
+
+Until later phases complete, these are explicitly compatibility paths, not architecture to extend:
+
+- legacy `runs.jsonl` may remain as one-time migration/export compatibility input, but is no longer canonical storage.
+- `RunRecord` still carries deprecated callback compatibility fields for historical JSON/DB deserialization, but no runtime shell callback execution remains.
+- MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
+- Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd requires pre-existing known-hosts trust.
+- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is now closed; remaining work is release hardening and future agent adapters.
+- **Repository baseline debt:** this runwatch worktree still has no Git commit and all project files are untracked. R8c exposed a real source/documentation drift that could not be traced historically; establish the first baseline commit before R9 or further release-hardening work.
+
+## Release gate for the overall project
+
+The product is not considered complete until this unattended loop passes:
+
+```text
+Pi on Windows
+  -> prepare remote workspace
+  -> runs_submit to remote Slurm/LSF
+  -> Pi exits completely
+  -> computation runs for hours
+  -> runwatch survives reconnect/restart conditions
+  -> terminal delivery restores the exact Pi research context
+  -> Pi explicitly activates the remote workspace
+  -> Pi inspects results and continues scientific reasoning
+```
+
+No human should need to type “continue”.
