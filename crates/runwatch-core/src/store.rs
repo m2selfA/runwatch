@@ -627,30 +627,48 @@ impl RunStore {
         for (delivery_id, payload_json) in candidates {
             let payload: DeliveryPayload =
                 serde_json::from_str(&payload_json).context("parse offline delivery candidate")?;
-            if payload.created_at > cutoff || payload.binding.agent_kind != "pi" {
+            if payload.created_at > cutoff {
+                continue;
+            }
+            let agent_kind = payload.binding.agent_kind.clone();
+            if !matches!(agent_kind.as_str(), "pi" | "codex") {
+                tx.execute(
+                    "UPDATE deliveries SET state='needs_rebind', last_error=?2
+                     WHERE delivery_id=?1 AND state IN ('pending','retrying')",
+                    params![
+                        delivery_id,
+                        format!("offline continuation does not support agent_kind={agent_kind}"),
+                    ],
+                )?;
                 continue;
             }
             let Some(session_file) = payload.binding.session_file.clone() else {
                 tx.execute(
-                    "UPDATE deliveries SET state='needs_rebind', last_error='offline continuation requires a durable Pi session file'
+                    "UPDATE deliveries SET state='needs_rebind', last_error=?2
                      WHERE delivery_id=?1 AND state IN ('pending','retrying')",
-                    [&delivery_id],
+                    params![
+                        delivery_id,
+                        format!(
+                            "offline {agent_kind} continuation requires a durable session/rollout file"
+                        ),
+                    ],
                 )?;
                 continue;
             };
-            let Some(adapter_path) = payload.binding.adapter_path.clone() else {
+            let adapter_path = payload.binding.adapter_path.clone();
+            if agent_kind == "pi" && adapter_path.is_none() {
                 tx.execute(
-                    "UPDATE deliveries SET state='needs_rebind', last_error='offline continuation requires the pi-runs adapter path; rebind from a current Pi instance'
+                    "UPDATE deliveries SET state='needs_rebind', last_error='offline Pi continuation requires the pi-runs adapter path; rebind from a current Pi instance'
                      WHERE delivery_id=?1 AND state IN ('pending','retrying')",
                     [&delivery_id],
                 )?;
                 continue;
-            };
+            }
 
             if let Some(expires) = tx
                 .query_row(
-                    "SELECT expires_at FROM agent_session_leases WHERE agent_kind='pi' AND session_id=?1",
-                    [&payload.binding.session_id],
+                    "SELECT expires_at FROM agent_session_leases WHERE agent_kind=?1 AND session_id=?2",
+                    params![agent_kind, payload.binding.session_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
@@ -661,11 +679,11 @@ impl RunStore {
             }
 
             let nonce = now.timestamp_nanos_opt().unwrap_or_default();
-            let owner_instance_id = format!("offline:{}:{nonce}", delivery_id);
-            let invocation_id = format!("inv:{}:{nonce}", delivery_id);
+            let owner_instance_id = format!("offline:{agent_kind}:{}:{nonce}", delivery_id);
+            let invocation_id = format!("inv:{agent_kind}:{}:{nonce}", delivery_id);
             let lease_expires = now + ChronoDuration::seconds(120);
             let registration = AgentSessionRegistration {
-                agent_kind: "pi".into(),
+                agent_kind: agent_kind.clone(),
                 session_id: payload.binding.session_id.clone(),
                 owner_instance_id: owner_instance_id.clone(),
                 session_file: Some(session_file.clone()),
@@ -674,12 +692,13 @@ impl RunStore {
             };
             tx.execute(
                 "INSERT INTO agent_session_leases(agent_kind, session_id, owner_instance_id, expires_at, payload_json)
-                 VALUES('pi', ?1, ?2, ?3, ?4)
+                 VALUES(?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(agent_kind, session_id) DO UPDATE SET
                    owner_instance_id=excluded.owner_instance_id,
                    expires_at=excluded.expires_at,
                    payload_json=excluded.payload_json",
                 params![
+                    agent_kind,
                     payload.binding.session_id,
                     owner_instance_id,
                     lease_expires.to_rfc3339(),
@@ -700,7 +719,7 @@ impl RunStore {
                 delivery_id: delivery_id.clone(),
                 owner_instance_id: owner_instance_id.clone(),
                 payload,
-                session_file,
+                session_file: Some(session_file),
                 adapter_path,
                 project_root: registration.project_root,
                 state: "starting".into(),
@@ -800,8 +819,11 @@ impl RunStore {
         let lease = conn
             .query_row(
                 "SELECT owner_instance_id, expires_at FROM agent_session_leases
-                 WHERE agent_kind='pi' AND session_id=?1",
-                [&invocation.payload.binding.session_id],
+                 WHERE agent_kind=?1 AND session_id=?2",
+                params![
+                    invocation.payload.binding.agent_kind,
+                    invocation.payload.binding.session_id,
+                ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
@@ -843,8 +865,11 @@ impl RunStore {
             let lease = tx
                 .query_row(
                     "SELECT owner_instance_id, expires_at FROM agent_session_leases
-                     WHERE agent_kind='pi' AND session_id=?1",
-                    [&invocation.payload.binding.session_id],
+                     WHERE agent_kind=?1 AND session_id=?2",
+                    params![
+                        invocation.payload.binding.agent_kind,
+                        invocation.payload.binding.session_id,
+                    ],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
@@ -871,7 +896,8 @@ impl RunStore {
                 "retrying" => "retrying",
                 "delivering" => {
                     let message = format!(
-                        "offline Pi invocation ownership expired after daemon/process interruption (prior invocation state={prior_state})"
+                        "offline {} invocation ownership expired after daemon/process interruption (prior invocation state={prior_state})",
+                        invocation.payload.binding.agent_kind
                     );
                     tx.execute(
                         "UPDATE deliveries
@@ -902,8 +928,12 @@ impl RunStore {
             )?;
             tx.execute(
                 "DELETE FROM agent_session_leases
-                 WHERE agent_kind='pi' AND session_id=?1 AND owner_instance_id=?2",
-                params![invocation.payload.binding.session_id, owner_instance_id],
+                 WHERE agent_kind=?1 AND session_id=?2 AND owner_instance_id=?3",
+                params![
+                    invocation.payload.binding.agent_kind,
+                    invocation.payload.binding.session_id,
+                    owner_instance_id,
+                ],
             )?;
             tx.execute(
                 "INSERT INTO run_events(run_id, at, kind, payload_json)
@@ -964,7 +994,10 @@ impl RunStore {
             "retrying" => ("retrying", process_error.map(str::to_string)),
             "delivering" => {
                 let message = process_error.map(str::to_string).unwrap_or_else(|| {
-                    format!("offline Pi exited before durable delivery ack (exit={exit_code:?})")
+                    format!(
+                        "offline {} exited before durable delivery ack (exit={exit_code:?})",
+                        invocation.payload.binding.agent_kind
+                    )
                 });
                 tx.execute(
                     "UPDATE deliveries SET state='retrying', next_retry_at=?2, last_error=?3 WHERE delivery_id=?1",
@@ -983,8 +1016,12 @@ impl RunStore {
             params![invocation_id, invocation_state, now.to_rfc3339(), last_error],
         )?;
         tx.execute(
-            "DELETE FROM agent_session_leases WHERE agent_kind='pi' AND session_id=?1 AND owner_instance_id=?2",
-            params![invocation.payload.binding.session_id, owner_instance_id],
+            "DELETE FROM agent_session_leases WHERE agent_kind=?1 AND session_id=?2 AND owner_instance_id=?3",
+            params![
+                invocation.payload.binding.agent_kind,
+                invocation.payload.binding.session_id,
+                owner_instance_id,
+            ],
         )?;
         tx.execute(
             "INSERT INTO run_events(run_id, at, kind, payload_json) VALUES(?1, ?2, 'agent_invocation_exit', ?3)",
@@ -1046,7 +1083,7 @@ impl RunStore {
                 None,
                 Some(
                     error
-                        .unwrap_or("Pi session branch diverged from Run origin")
+                        .unwrap_or("agent continuation binding requires explicit rebind")
                         .to_string(),
                 ),
             ),
@@ -1753,10 +1790,11 @@ mod tests {
         cleanup(&db);
     }
 
-    fn seed_offline_invocation_fixture(
+    fn seed_offline_invocation_fixture_for_agent(
         name: &str,
         run_id: &str,
         session_id: &str,
+        agent_kind: &str,
     ) -> (PathBuf, RunStore, String, AgentInvocationRecord) {
         use crate::types::{ContinuationBinding, RemoteWorkspaceRef};
 
@@ -1767,13 +1805,14 @@ mod tests {
             cwd: "/shared/project".into(),
         };
         let binding = ContinuationBinding {
-            agent_kind: "pi".into(),
+            agent_kind: agent_kind.into(),
             session_id: session_id.into(),
             session_file: Some(format!("C:/sessions/{session_id}.jsonl")),
-            origin_leaf_id: Some("leaf-origin".into()),
+            origin_leaf_id: (agent_kind == "pi").then(|| "leaf-origin".into()),
             project_root: "C:/science".into(),
             workspace: workspace.clone(),
-            adapter_path: Some("C:/pi-runs/extensions/runs/index.ts".into()),
+            adapter_path: (agent_kind == "pi")
+                .then(|| "C:/pi-runs/extensions/runs/index.ts".into()),
         };
         let mut run = RunRecord::new(run_id.into(), "cluster".into(), RunnerKind::Slurm);
         run.status = RunStatus::Succeeded;
@@ -1796,17 +1835,30 @@ mod tests {
         (db, store, delivery_id, invocation)
     }
 
-    fn expire_offline_lease(store: &RunStore, session_id: &str) {
+    fn seed_offline_invocation_fixture(
+        name: &str,
+        run_id: &str,
+        session_id: &str,
+    ) -> (PathBuf, RunStore, String, AgentInvocationRecord) {
+        seed_offline_invocation_fixture_for_agent(name, run_id, session_id, "pi")
+    }
+
+    fn expire_offline_lease_for_agent(store: &RunStore, agent_kind: &str, session_id: &str) {
         let conn = store.connect().unwrap();
         conn.execute(
-            "UPDATE agent_session_leases SET expires_at=?2
-             WHERE agent_kind='pi' AND session_id=?1",
+            "UPDATE agent_session_leases SET expires_at=?3
+             WHERE agent_kind=?1 AND session_id=?2",
             params![
+                agent_kind,
                 session_id,
                 (Utc::now() - ChronoDuration::seconds(1)).to_rfc3339()
             ],
         )
         .unwrap();
+    }
+
+    fn expire_offline_lease(store: &RunStore, session_id: &str) {
+        expire_offline_lease_for_agent(store, "pi", session_id);
     }
 
     #[test]
@@ -2015,10 +2067,13 @@ mod tests {
             .unwrap()
             .expect("offline invocation");
         assert_eq!(invocation.delivery_id, delivery_id);
-        assert_eq!(invocation.session_file, "C:/sessions/offline.jsonl");
         assert_eq!(
-            invocation.adapter_path,
-            "C:/pi-runs/extensions/runs/index.ts"
+            invocation.session_file.as_deref(),
+            Some("C:/sessions/offline.jsonl")
+        );
+        assert_eq!(
+            invocation.adapter_path.as_deref(),
+            Some("C:/pi-runs/extensions/runs/index.ts")
         );
         assert!(
             store
@@ -2067,6 +2122,59 @@ mod tests {
             .unwrap();
         assert_eq!(leases, 0);
         drop(conn);
+        cleanup(&db);
+    }
+
+    #[test]
+    fn codex_offline_invocation_reserves_exact_agent_lease_without_pi_adapter() {
+        let (db, store, delivery_id, invocation) = seed_offline_invocation_fixture_for_agent(
+            "offline-codex",
+            "r-codex",
+            "codex-thread-1",
+            "codex",
+        );
+        assert_eq!(invocation.delivery_id, delivery_id);
+        assert_eq!(invocation.payload.binding.agent_kind, "codex");
+        assert!(invocation.session_file.is_some());
+        assert!(invocation.adapter_path.is_none());
+        assert!(
+            store
+                .offline_invocation_is_owned(
+                    &invocation.invocation_id,
+                    &delivery_id,
+                    &invocation.owner_instance_id,
+                )
+                .unwrap()
+        );
+        let conn = store.connect().unwrap();
+        let codex_leases: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_leases WHERE agent_kind='codex' AND session_id='codex-thread-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pi_leases: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_leases WHERE agent_kind='pi' AND session_id='codex-thread-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(codex_leases, 1);
+        assert_eq!(pi_leases, 0);
+        drop(conn);
+        expire_offline_lease_for_agent(&store, "codex", "codex-thread-1");
+        assert_eq!(
+            store
+                .reconcile_orphaned_agent_invocations(Duration::ZERO)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store.get_delivery_state(&delivery_id).unwrap().as_deref(),
+            Some("retrying")
+        );
         cleanup(&db);
     }
 

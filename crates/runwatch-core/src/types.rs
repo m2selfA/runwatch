@@ -193,8 +193,10 @@ pub struct AgentInvocationRecord {
     pub delivery_id: String,
     pub owner_instance_id: String,
     pub payload: DeliveryPayload,
-    pub session_file: String,
-    pub adapter_path: String,
+    #[serde(default)]
+    pub session_file: Option<String>,
+    #[serde(default)]
+    pub adapter_path: Option<String>,
     pub project_root: String,
     pub state: String,
     #[serde(default)]

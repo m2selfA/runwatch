@@ -471,18 +471,29 @@ Architecture and acceptance:
 - [x] Real isolated MCP -> daemon -> gm00 Slurm gate passed: `_meta.threadId=019c1234-5678-7000-8000-000000000008` plus synthetic first-record-only Codex metadata produced Run `r9a_codex_mcp_0901_02`, Slurm Job **31738**, canonical `agent=codex`, exact `session_id`, project root sourced from session metadata, and `gm00:/share/home/shark/tmp`; after the submitting MCP process exited, a separate MCP client observed the same Run as **succeeded**.
 - [x] R9a validation: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **82 passed, 0 failed, 6 ignored by default**. The sixth ignored gate is the real Codex rollout locator and was explicitly run green. Temporary local daemon/SQLite/CODEX_HOME smoke state was removed after acceptance.
 
-### R9b — Codex terminal Delivery / AgentInvocation — next
+### R9b — generic AgentInvocation + Codex offline driver — completed 2026-09-01
 
-- [ ] Generalize the offline invocation reservation/lease code so agent identity is data-driven instead of hard-coded to `pi`; preserve all Pi tests and exact-session semantics.
-- [ ] Add Codex terminal delivery: live-first `codex queue`; offline fallback `codex exec resume <thread_id> --json`; require emitted `thread.started.thread_id` to equal the bound id exactly before accepting a resume.
-- [ ] Add deterministic Delivery-id evidence/recovery so a crash after Codex persists the continuation prompt but before runwatch records success cannot duplicate the scientific continuation.
-- [ ] Add final real Codex end-to-end acceptance: submit a short durable Run from a real Codex thread, terminate the initiating CLI, observe terminal, restore the exact thread, and continue without a human typing “continue”. R9a has already accepted the execution/binding half; this gate closes the continuation half.
+- [x] Generalized offline reservation/session leases from hard-coded `agent_kind='pi'` to the explicit supported set `{pi,codex}`. Pi still requires durable session file + pi-runs adapter; Codex requires a persisted rollout file but no Pi adapter. Ownership checks, orphan reconciliation, lease cleanup and process completion now key on `(agent_kind, session_id)` rather than silently using Pi leases.
+- [x] `AgentInvocationRecord.session_file` / `adapter_path` are now optional durable fields so one invocation model can represent both adapters without fabricating a Pi extension path for Codex. Existing Pi JSON remains backward compatible and all Pi reservation/ownership tests stay green.
+- [x] Added an explicit offline AgentAdapter dispatcher: `pi` keeps the already-accepted RPC/session lifecycle; `codex` uses native `codex.exe exec resume --json <thread_id> <bounded completion>`. Windows refuses `.cmd/.bat` shims for unattended Codex launch and allows an explicit native `RUNWATCH_CODEX_EXECUTABLE` override.
+- [x] Codex completion prompts carry deterministic marker `[runwatch continuation delivery_id=...]`, Run/Attempt/Job/workspace metadata, and the explicit instruction not to resubmit the completed Attempt. Generated argv contains no `--approve` or dangerous trust/sandbox bypass flag.
+- [x] Codex stdout is parsed as bounded JSONL: individual lines above 256 KiB are drained and discarded, stderr retains only the last 64 KiB, and success requires **exact** `thread.started.thread_id`, `turn.started`, `turn.completed`, exit 0, and no `turn.failed` / `error` / malformed event. A mismatched or absent thread identity becomes `needs_rebind`, never a silently accepted replacement thread; ordinary execution failure becomes retryable Delivery failure.
+- [x] Added Codex durable-store coverage proving an independent `agent_kind=codex` lease is reserved without a Pi adapter and orphaned ownership requeues the same Delivery. Focused Pi offline tests remain green.
+- [x] Added a default-ignored native subprocess acceptance with an isolated SQLite store and native `pwsh.exe` Codex stub. It exercises real child spawn, resume argv, bounded JSONL parsing, exact-thread evidence, Delivery ack and non-re-reservation; explicit 2026-09-01 run passed **1/1**.
+- [x] R9b regression: `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **88 passed, 0 failed, 7 ignored by default**. The seventh ignored gate is the native Codex driver stub and was explicitly run green.
+
+### R9c — live concurrency + crash-window idempotency + real Codex continuation — next
+
+- [ ] Prevent concurrent exact-thread ownership when the initiating Codex CLI is still active. `codex queue` is a possible live/resident fast path, but **queue command success alone must never mark Delivery delivered**; it needs durable rollout evidence or an equivalent ownership/settlement signal.
+- [ ] Add deterministic Delivery-id evidence/recovery so a crash after Codex persists or completes the continuation but before runwatch records success cannot inject the same scientific continuation twice.
+- [ ] Add final real Codex end-to-end acceptance: submit a short durable Run from a real Codex thread, terminate the initiating CLI, observe terminal, restore the exact thread, and continue without a human typing “continue”. R9a accepted execution/binding and R9b accepted the offline driver; this gate closes real-agent continuation.
 
 Safety invariants:
 
 - Never pass `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-bypass-hook-trust` for unattended continuation.
 - A missing/ephemeral rollout, thread-id mismatch, unavailable project cwd, or ambiguous resume is fail-closed and becomes retry/needs-attention, never a silently-created replacement thread.
 - Codex is an AgentAdapter only. Run state, scheduler ownership, observation and Delivery retry remain exclusively in `runwatchd`.
+- A subprocess exit code is never sufficient Codex continuation evidence; exact thread identity and completed-turn evidence are mandatory.
 
 ## Known transitional debt
 

@@ -322,7 +322,9 @@ first record: session_meta { id, session_id, cwd } ┘
 
 session locator 只读取 rollout 第一条 `session_meta`，要求 `payload.id == _meta.threadId`，且真实 0.150.1 中若同时存在 `payload.session_id` 则进一步要求 `session_id == id`；取 `payload.cwd` 作为 project root，并要求该目录仍存在。正常绑定不会扫描对话正文。Codex 的 `origin_leaf_id` 为空，因为 Codex thread identity 本身是 R9 v1 的 continuation unit。R9a 已实测 `submit_science_run -> submit_run_v2 -> gm00 Slurm -> terminal`，提交 MCP client 退出后计算仍独立完成；Codex terminal dispatch 留给 R9b。
 
-terminal delivery 采用 live/offline 两层：运行中的 exact thread 优先 `codex queue --thread <id> --message <bounded completion>`；live 不可用时再以 `codex exec resume <id> --json <bounded completion>` 恢复持久 thread。offline worker 必须解析 JSONL 事件并验证实际 `thread.started.thread_id` 与 binding 完全一致；exit 0 本身不构成恢复成功。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
+R9b 已实现可靠的 **offline** Codex driver：daemon 为 `agent_kind=codex` 独立 reserve session lease，然后以 native `codex.exe exec resume --json <thread_id> <bounded completion>` 恢复持久 thread。completion 带 deterministic `delivery_id` marker；stdout 采用 bounded JSONL parser，只有 exact `thread.started.thread_id` + `turn.started` + `turn.completed` + process exit 0 且无 failure/error/malformed event 才能把 Delivery 标为 delivered。缺失/替换 thread identity 直接 `needs_rebind`；普通 agent/provider 失败走 retry。单条超大 item 输出被 drain 后丢弃，stderr 只保留 bounded tail，避免科研输出撑爆 resident daemon。
+
+`codex queue --thread <id> --message ...` 已确认是 app-server 的 queued-turn surface，但 **queue 命令成功本身不是 continuation 完成证据**。R9c 才会把它作为可能的 live/resident fast path，并同时解决“原 Codex CLI 仍活着时禁止第二个 exact-thread owner”和“continuation 已落到 rollout、daemon 在 ack 前崩溃”的去重问题。在这些门禁完成前，不能把 queue exit 0 当作 delivered。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
 
 
 ## 安全边界

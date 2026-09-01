@@ -1,11 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
-use runwatch_core::{AgentInvocationRecord, RunStore};
+use runwatch_core::{AgentInvocationRecord, DeliveryPayload, RunStore};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 const OFFLINE_GRACE: Duration = Duration::from_secs(20);
@@ -14,13 +15,16 @@ const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(6 * 60 * 60);
 const DELIVERY_STDIN_POLL: Duration = Duration::from_millis(500);
 pub const ORPHAN_RECONNECT_GRACE: Duration = Duration::from_secs(30);
 const ORPHAN_RETRY_DELAY: Duration = Duration::from_secs(30);
+const MAX_CODEX_EVENT_LINE_BYTES: usize = 256 * 1024;
+const MAX_CODEX_STDERR_TAIL_BYTES: usize = 64 * 1024;
+const MAX_CODEX_PROMPT_BYTES: usize = 8 * 1024;
 
 fn delivery_keeps_rpc_stdin_open(state: Option<&str>) -> bool {
     matches!(state, Some("delivering"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PiLauncher {
+struct AgentLauncher {
     executable: OsString,
     prefix_args: Vec<OsString>,
 }
@@ -33,33 +37,33 @@ fn find_in_path(path: Option<&OsStr>, file_name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn resolve_default_pi_launcher(path: Option<&OsStr>) -> Result<PiLauncher> {
+fn resolve_default_pi_launcher(path: Option<&OsStr>) -> Result<AgentLauncher> {
     if let Some(executable) = find_in_path(path, "pi.exe") {
-        return Ok(PiLauncher {
+        return Ok(AgentLauncher {
             executable: executable.into_os_string(),
             prefix_args: Vec::new(),
         });
     }
     if let Some(volta) = find_in_path(path, "volta.exe") {
-        return Ok(PiLauncher {
+        return Ok(AgentLauncher {
             executable: volta.into_os_string(),
             prefix_args: vec![OsString::from("run"), OsString::from("pi")],
         });
     }
-    anyhow::bail!(
+    bail!(
         "no native Pi launcher found on PATH: expected pi.exe or volta.exe. Windows shell shims such as pi.cmd are not used for unattended continuation; set RUNWATCH_PI_EXECUTABLE to a native launcher"
     )
 }
 
 #[cfg(not(windows))]
-fn resolve_default_pi_launcher(_path: Option<&OsStr>) -> Result<PiLauncher> {
-    Ok(PiLauncher {
+fn resolve_default_pi_launcher(_path: Option<&OsStr>) -> Result<AgentLauncher> {
+    Ok(AgentLauncher {
         executable: OsString::from("pi"),
         prefix_args: Vec::new(),
     })
 }
 
-fn resolve_pi_launcher() -> Result<PiLauncher> {
+fn resolve_pi_launcher() -> Result<AgentLauncher> {
     if let Some(executable) = std::env::var_os("RUNWATCH_PI_EXECUTABLE") {
         #[cfg(windows)]
         if matches!(
@@ -70,16 +74,233 @@ fn resolve_pi_launcher() -> Result<PiLauncher> {
                 .as_deref(),
             Some("cmd" | "bat")
         ) {
-            anyhow::bail!(
+            bail!(
                 "RUNWATCH_PI_EXECUTABLE must be a native executable on Windows, not a .cmd/.bat shell shim"
             );
         }
-        return Ok(PiLauncher {
+        return Ok(AgentLauncher {
             executable,
             prefix_args: Vec::new(),
         });
     }
     resolve_default_pi_launcher(std::env::var_os("PATH").as_deref())
+}
+
+#[cfg(windows)]
+fn resolve_default_codex_launcher(path: Option<&OsStr>) -> Result<AgentLauncher> {
+    if let Some(executable) = find_in_path(path, "codex.exe") {
+        return Ok(AgentLauncher {
+            executable: executable.into_os_string(),
+            prefix_args: Vec::new(),
+        });
+    }
+    bail!(
+        "no native Codex launcher found on PATH: expected codex.exe. Windows shell shims such as codex.cmd are not used for unattended continuation; set RUNWATCH_CODEX_EXECUTABLE to a native launcher"
+    )
+}
+
+#[cfg(not(windows))]
+fn resolve_default_codex_launcher(_path: Option<&OsStr>) -> Result<AgentLauncher> {
+    Ok(AgentLauncher {
+        executable: OsString::from("codex"),
+        prefix_args: Vec::new(),
+    })
+}
+
+fn resolve_codex_launcher() -> Result<AgentLauncher> {
+    if let Some(executable) = std::env::var_os("RUNWATCH_CODEX_EXECUTABLE") {
+        #[cfg(windows)]
+        if matches!(
+            Path::new(&executable)
+                .extension()
+                .and_then(OsStr::to_str)
+                .map(|value| value.to_ascii_lowercase())
+                .as_deref(),
+            Some("cmd" | "bat")
+        ) {
+            bail!(
+                "RUNWATCH_CODEX_EXECUTABLE must be a native executable on Windows, not a .cmd/.bat shell shim"
+            );
+        }
+        return Ok(AgentLauncher {
+            executable,
+            prefix_args: Vec::new(),
+        });
+    }
+    resolve_default_codex_launcher(std::env::var_os("PATH").as_deref())
+}
+
+fn codex_completion_prompt(payload: &DeliveryPayload) -> Result<String> {
+    let envelope = serde_json::json!({
+        "delivery_id": payload.delivery_id,
+        "run_id": payload.run_id,
+        "attempt_no": payload.attempt_no,
+        "status": payload.status,
+        "job_id": payload.job_id,
+        "workspace": payload.workspace,
+    });
+    let prompt = format!(
+        "[runwatch continuation delivery_id={}]\nA durable scientific computation created by this exact Codex thread reached terminal state. Run metadata: {}\nContinue the existing scientific task from this thread's prior context. Do not resubmit the completed attempt. Inspect runwatch status/logs/artifacts and the recorded workspace as needed, then continue the scientific reasoning and next appropriate work.",
+        payload.delivery_id, envelope
+    );
+    if prompt.len() > MAX_CODEX_PROMPT_BYTES {
+        bail!("Codex continuation prompt exceeds {MAX_CODEX_PROMPT_BYTES} bytes");
+    }
+    Ok(prompt)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CodexExecEvidence {
+    thread_id: Option<String>,
+    thread_mismatch: Option<String>,
+    turn_started: bool,
+    turn_completed: bool,
+    turn_failed: bool,
+    error_event: bool,
+    malformed_events: u32,
+    skipped_large_events: u32,
+}
+
+impl CodexExecEvidence {
+    fn observe(&mut self, value: &serde_json::Value, expected_thread_id: &str) {
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("thread.started") => {
+                let actual = value
+                    .get("thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if actual != expected_thread_id {
+                    self.thread_mismatch = Some(actual.clone());
+                }
+                if self.thread_id.is_none() {
+                    self.thread_id = Some(actual);
+                }
+            }
+            Some("turn.started") => self.turn_started = true,
+            Some("turn.completed") => self.turn_completed = true,
+            Some("turn.failed") => self.turn_failed = true,
+            Some("error") => self.error_event = true,
+            _ => {}
+        }
+    }
+
+    fn is_success(&self, expected_thread_id: &str) -> bool {
+        self.thread_mismatch.is_none()
+            && self.thread_id.as_deref() == Some(expected_thread_id)
+            && self.turn_started
+            && self.turn_completed
+            && !self.turn_failed
+            && !self.error_event
+            && self.malformed_events == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexLine {
+    Eof,
+    Line(Vec<u8>),
+    SkippedTooLarge,
+}
+
+async fn read_codex_event_line<R>(reader: &mut BufReader<R>) -> Result<CodexLine>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut line = Vec::new();
+    let mut too_large = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if too_large {
+                Ok(CodexLine::SkippedTooLarge)
+            } else if line.is_empty() {
+                Ok(CodexLine::Eof)
+            } else {
+                Ok(CodexLine::Line(line))
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.unwrap_or(available.len());
+        if !too_large {
+            if line.len().saturating_add(take) > MAX_CODEX_EVENT_LINE_BYTES {
+                too_large = true;
+                line.clear();
+            } else {
+                line.extend_from_slice(&available[..take]);
+            }
+        }
+        let consumed = take + usize::from(newline.is_some());
+        reader.consume(consumed);
+        if newline.is_some() {
+            return if too_large {
+                Ok(CodexLine::SkippedTooLarge)
+            } else {
+                Ok(CodexLine::Line(line))
+            };
+        }
+    }
+}
+
+async fn parse_codex_exec_stream<R>(
+    reader: R,
+    expected_thread_id: &str,
+) -> Result<CodexExecEvidence>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(reader);
+    let mut evidence = CodexExecEvidence::default();
+    loop {
+        match read_codex_event_line(&mut reader).await? {
+            CodexLine::Eof => break,
+            CodexLine::SkippedTooLarge => evidence.skipped_large_events += 1,
+            CodexLine::Line(line) => {
+                if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                match serde_json::from_slice::<serde_json::Value>(&line) {
+                    Ok(value) => evidence.observe(&value, expected_thread_id),
+                    Err(_) => evidence.malformed_events += 1,
+                }
+            }
+        }
+    }
+    Ok(evidence)
+}
+
+async fn drain_stderr_tail<R>(mut reader: R) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..read]);
+        if tail.len() > MAX_CODEX_STDERR_TAIL_BYTES {
+            let excess = tail.len() - MAX_CODEX_STDERR_TAIL_BYTES;
+            tail.drain(..excess);
+        }
+    }
+    Ok(tail)
+}
+
+fn bounded_stderr_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+fn codex_resume_args(thread_id: &str, prompt: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("exec"),
+        OsString::from("resume"),
+        OsString::from("--json"),
+        OsString::from(thread_id),
+        OsString::from(prompt),
+    ]
 }
 
 pub fn reconcile_orphans(store: &RunStore) -> Result<u32> {
@@ -95,10 +316,13 @@ pub fn dispatch_due(store: Arc<RunStore>) -> Result<usize> {
         let store = store.clone();
         tokio::spawn(async move {
             if let Err(err) = run_invocation(store.clone(), invocation.clone()).await {
+                let agent_kind = &invocation.payload.binding.agent_kind;
                 let _ = store.finish_agent_invocation_process(
                     &invocation.invocation_id,
                     None,
-                    Some(&format!("offline Pi invocation task failed: {err:#}")),
+                    Some(&format!(
+                        "offline {agent_kind} invocation task failed: {err:#}"
+                    )),
                 );
             }
         });
@@ -108,7 +332,23 @@ pub fn dispatch_due(store: Arc<RunStore>) -> Result<usize> {
 }
 
 async fn run_invocation(store: Arc<RunStore>, invocation: AgentInvocationRecord) -> Result<()> {
+    match invocation.payload.binding.agent_kind.as_str() {
+        "pi" => run_pi_invocation(store, invocation).await,
+        "codex" => run_codex_invocation(store, invocation).await,
+        other => bail!("unsupported offline AgentAdapter {other}"),
+    }
+}
+
+async fn run_pi_invocation(store: Arc<RunStore>, invocation: AgentInvocationRecord) -> Result<()> {
     let launcher = resolve_pi_launcher()?;
+    let session_file = invocation
+        .session_file
+        .as_deref()
+        .context("offline Pi invocation has no durable session file")?;
+    let adapter_path = invocation
+        .adapter_path
+        .as_deref()
+        .context("offline Pi invocation has no pi-runs adapter path")?;
     let payload = serde_json::to_vec(&invocation.payload)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
 
@@ -119,9 +359,9 @@ async fn run_invocation(store: Arc<RunStore>, invocation: AgentInvocationRecord)
             "--mode",
             "rpc",
             "--session",
-            &invocation.session_file,
+            session_file,
             "-e",
-            &invocation.adapter_path,
+            adapter_path,
         ])
         .current_dir(&invocation.project_root)
         .env("RUNWATCH_OFFLINE_DELIVERY_B64", encoded)
@@ -209,6 +449,189 @@ async fn run_invocation(store: Arc<RunStore>, invocation: AgentInvocationRecord)
     Ok(())
 }
 
+fn finish_codex_delivery(
+    store: &RunStore,
+    invocation: &AgentInvocationRecord,
+    outcome: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    let updated = store.finish_delivery(
+        "codex",
+        &invocation.payload.binding.session_id,
+        &invocation.owner_instance_id,
+        &invocation.delivery_id,
+        outcome,
+        error,
+    )?;
+    if !updated {
+        bail!(
+            "Codex invocation no longer owns Delivery {}",
+            invocation.delivery_id
+        );
+    }
+    Ok(())
+}
+
+async fn run_codex_invocation(
+    store: Arc<RunStore>,
+    invocation: AgentInvocationRecord,
+) -> Result<()> {
+    let session_file = invocation
+        .session_file
+        .as_deref()
+        .context("offline Codex invocation has no persisted rollout file")?;
+    if !Path::new(session_file).is_file() {
+        let message = format!("persisted Codex rollout is unavailable: {session_file}");
+        finish_codex_delivery(&store, &invocation, "needs_rebind", Some(&message))?;
+        store.finish_agent_invocation_process(&invocation.invocation_id, None, Some(&message))?;
+        return Ok(());
+    }
+    if !Path::new(&invocation.project_root).is_dir() {
+        let message = format!(
+            "Codex project cwd is unavailable: {}",
+            invocation.project_root
+        );
+        finish_codex_delivery(&store, &invocation, "needs_rebind", Some(&message))?;
+        store.finish_agent_invocation_process(&invocation.invocation_id, None, Some(&message))?;
+        return Ok(());
+    }
+
+    let launcher = resolve_codex_launcher()?;
+    run_codex_invocation_with_launcher(store, invocation, launcher).await
+}
+
+async fn run_codex_invocation_with_launcher(
+    store: Arc<RunStore>,
+    invocation: AgentInvocationRecord,
+    launcher: AgentLauncher,
+) -> Result<()> {
+    let expected_thread_id = invocation.payload.binding.session_id.clone();
+    let prompt = codex_completion_prompt(&invocation.payload)?;
+    let mut command = Command::new(&launcher.executable);
+    command
+        .args(&launcher.prefix_args)
+        .args(codex_resume_args(&expected_thread_id, &prompt))
+        .current_dir(&invocation.project_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let message = format!("spawn offline Codex exec-resume worker: {err}");
+            store.finish_agent_invocation_process(
+                &invocation.invocation_id,
+                None,
+                Some(&message),
+            )?;
+            return Err(err).context("spawn offline Codex exec-resume worker");
+        }
+    };
+    let pid = child
+        .id()
+        .context("offline Codex exec-resume worker has no pid")?;
+    store.set_agent_invocation_pid(&invocation.invocation_id, pid)?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("offline Codex stdout unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("offline Codex stderr unavailable")?;
+    let thread_for_parser = expected_thread_id.clone();
+    let stdout_task =
+        tokio::spawn(async move { parse_codex_exec_stream(stdout, &thread_for_parser).await });
+    let stderr_task = tokio::spawn(async move { drain_stderr_tail(stderr).await });
+
+    let wait = tokio::time::timeout(MAX_AGENT_RUNTIME, child.wait()).await;
+    let (exit_code, timed_out, process_error) = match wait {
+        Ok(Ok(status)) => (status.code(), false, None),
+        Ok(Err(err)) => (
+            None,
+            false,
+            Some(format!("wait offline Codex worker: {err}")),
+        ),
+        Err(_) => {
+            let _ = child.kill().await;
+            (
+                None,
+                true,
+                Some(format!(
+                    "offline Codex worker exceeded {} seconds",
+                    MAX_AGENT_RUNTIME.as_secs()
+                )),
+            )
+        }
+    };
+    let evidence = stdout_task
+        .await
+        .context("join offline Codex stdout parser")??;
+    let stderr = stderr_task
+        .await
+        .context("join offline Codex stderr drain")??;
+    let stderr = bounded_stderr_text(&stderr);
+
+    let (outcome, message) = if let Some(actual) = evidence.thread_mismatch.as_deref() {
+        (
+            "needs_rebind",
+            format!(
+                "Codex resume thread mismatch: requested {expected_thread_id}, observed {actual}; refusing to continue a replacement thread"
+            ),
+        )
+    } else if evidence.thread_id.as_deref() != Some(expected_thread_id.as_str()) {
+        (
+            "needs_rebind",
+            "Codex exec-resume emitted no exact thread.started identity; refusing ambiguous continuation"
+                .into(),
+        )
+    } else if !timed_out
+        && process_error.is_none()
+        && exit_code == Some(0)
+        && evidence.is_success(&expected_thread_id)
+    {
+        ("delivered", String::new())
+    } else {
+        let mut details = process_error.unwrap_or_else(|| {
+            format!(
+                "Codex continuation did not complete successfully: exit={exit_code:?} turn_started={} turn_completed={} turn_failed={} error_event={} malformed_events={} skipped_large_events={}",
+                evidence.turn_started,
+                evidence.turn_completed,
+                evidence.turn_failed,
+                evidence.error_event,
+                evidence.malformed_events,
+                evidence.skipped_large_events,
+            )
+        });
+        if !stderr.is_empty() {
+            details.push_str("; stderr: ");
+            details.push_str(&stderr);
+        }
+        ("retry", details)
+    };
+
+    finish_codex_delivery(
+        &store,
+        &invocation,
+        outcome,
+        (!message.is_empty()).then_some(message.as_str()),
+    )?;
+    store.finish_agent_invocation_process(
+        &invocation.invocation_id,
+        exit_code,
+        (!message.is_empty()).then_some(message.as_str()),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +699,278 @@ mod tests {
         let path = std::env::join_paths([root.as_path()]).unwrap();
         let err = resolve_default_pi_launcher(Some(&path)).unwrap_err();
         assert!(err.to_string().contains("no native Pi launcher"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_codex_launcher_requires_native_executable() {
+        let root = std::env::temp_dir().join(format!(
+            "runwatch-codex-launcher-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("codex.cmd"), b"@echo off\r\n").unwrap();
+        let path = std::env::join_paths([root.as_path()]).unwrap();
+        let err = resolve_default_codex_launcher(Some(&path)).unwrap_err();
+        assert!(err.to_string().contains("no native Codex launcher"));
+
+        let codex = root.join("codex.exe");
+        std::fs::write(&codex, b"stub").unwrap();
+        let launcher = resolve_default_codex_launcher(Some(&path)).unwrap();
+        assert_eq!(launcher.executable, codex.as_os_str());
+        assert!(launcher.prefix_args.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn codex_test_payload(thread_id: &str) -> DeliveryPayload {
+        use chrono::Utc;
+        use runwatch_core::{ContinuationBinding, RemoteWorkspaceRef, RunStatus};
+
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "gm00".into(),
+            cwd: "/shared/project".into(),
+        };
+        DeliveryPayload {
+            delivery_id: "r9-codex:a1:terminal".into(),
+            run_id: "r9-codex".into(),
+            attempt_no: 1,
+            status: RunStatus::Succeeded,
+            job_id: Some("12345".into()),
+            workspace: workspace.clone(),
+            binding: ContinuationBinding {
+                agent_kind: "codex".into(),
+                session_id: thread_id.into(),
+                session_file: Some("C:/Users/test/.codex/sessions/rollout.jsonl".into()),
+                origin_leaf_id: None,
+                project_root: "C:/science".into(),
+                workspace,
+                adapter_path: None,
+            },
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn codex_prompt_and_resume_argv_are_bounded_exact_and_do_not_bypass_trust() {
+        let thread = "019c1234-5678-7000-8000-000000000009";
+        let prompt = codex_completion_prompt(&codex_test_payload(thread)).unwrap();
+        assert!(prompt.contains("delivery_id=r9-codex:a1:terminal"));
+        assert!(prompt.contains("Do not resubmit the completed attempt"));
+        assert!(prompt.len() <= MAX_CODEX_PROMPT_BYTES);
+
+        let args = codex_resume_args(thread, &prompt);
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert_eq!(&rendered[..4], ["exec", "resume", "--json", thread]);
+        assert_eq!(rendered[4], prompt);
+        assert!(!rendered.iter().any(|arg| arg.contains("dangerously")));
+        assert!(!rendered.iter().any(|arg| arg == "--approve"));
+    }
+
+    async fn parse_codex_bytes(bytes: Vec<u8>, expected: &str) -> CodexExecEvidence {
+        let capacity = bytes.len().max(1024);
+        let (mut writer, reader) = tokio::io::duplex(capacity);
+        let write = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer.write_all(&bytes).await.unwrap();
+        });
+        let evidence = parse_codex_exec_stream(reader, expected).await.unwrap();
+        write.await.unwrap();
+        evidence
+    }
+
+    #[tokio::test]
+    async fn codex_jsonl_requires_exact_thread_and_completed_turn() {
+        let thread = "019c1234-5678-7000-8000-000000000010";
+        let bytes = format!(
+            "{{\"type\":\"thread.started\",\"thread_id\":\"{thread}\"}}\n\
+             {{\"type\":\"turn.started\"}}\n\
+             {{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\"}}}}\n\
+             {{\"type\":\"turn.completed\"}}\n"
+        )
+        .into_bytes();
+        let evidence = parse_codex_bytes(bytes, thread).await;
+        assert_eq!(evidence.thread_id.as_deref(), Some(thread));
+        assert!(evidence.turn_started);
+        assert!(evidence.turn_completed);
+        assert!(evidence.is_success(thread));
+    }
+
+    #[tokio::test]
+    async fn codex_jsonl_rejects_replacement_thread_and_failure_events() {
+        let expected = "019c1234-5678-7000-8000-000000000011";
+        let actual = "019c1234-5678-7000-8000-000000000012";
+        let mismatch = format!(
+            "{{\"type\":\"thread.started\",\"thread_id\":\"{actual}\"}}\n\
+             {{\"type\":\"turn.started\"}}\n{{\"type\":\"turn.completed\"}}\n"
+        )
+        .into_bytes();
+        let evidence = parse_codex_bytes(mismatch, expected).await;
+        assert_eq!(evidence.thread_mismatch.as_deref(), Some(actual));
+        assert!(!evidence.is_success(expected));
+
+        let failed = format!(
+            "{{\"type\":\"thread.started\",\"thread_id\":\"{expected}\"}}\n\
+             {{\"type\":\"turn.started\"}}\n{{\"type\":\"turn.failed\"}}\n"
+        )
+        .into_bytes();
+        let evidence = parse_codex_bytes(failed, expected).await;
+        assert!(evidence.turn_failed);
+        assert!(!evidence.is_success(expected));
+    }
+
+    #[tokio::test]
+    async fn codex_jsonl_skips_oversized_item_without_losing_later_terminal_events() {
+        let thread = "019c1234-5678-7000-8000-000000000013";
+        let mut bytes = format!(
+            "{{\"type\":\"thread.started\",\"thread_id\":\"{thread}\"}}\n\
+             {{\"type\":\"turn.started\"}}\n"
+        )
+        .into_bytes();
+        bytes.extend(std::iter::repeat_n(b'x', MAX_CODEX_EVENT_LINE_BYTES + 1));
+        bytes.push(b'\n');
+        bytes.extend_from_slice(b"{\"type\":\"turn.completed\"}\n");
+        let evidence = parse_codex_bytes(bytes, thread).await;
+        assert_eq!(evidence.skipped_large_events, 1);
+        assert_eq!(evidence.malformed_events, 0);
+        assert!(evidence.turn_completed);
+        assert!(evidence.is_success(thread));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "spawns a native PowerShell Codex stub and exercises the durable offline Delivery path"]
+    async fn real_codex_driver_native_stub_acceptance() {
+        use chrono::Utc;
+        use runwatch_core::{
+            ContinuationBinding, RemoteWorkspaceRef, RunAttemptRecord, RunRecord, RunResources,
+            RunStatus, RunnerKind,
+        };
+
+        let pwsh = find_in_path(std::env::var_os("PATH").as_deref(), "pwsh.exe")
+            .expect("pwsh.exe is required for the Windows native-stub acceptance");
+        let root = PathBuf::from(
+            std::env::var_os("RUNWATCH_DATA_DIR")
+                .expect("RUNWATCH_DATA_DIR must point at an isolated directory for this gate"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("codex-stub.ps1");
+        std::fs::write(
+            &script,
+            r#"param(
+  [Parameter(Position=0)][string]$Verb1,
+  [Parameter(Position=1)][string]$Verb2,
+  [switch]$json,
+  [Parameter(Position=2)][string]$Thread,
+  [Parameter(Position=3)][string]$Prompt
+)
+# PowerShell -File treats --json as a named parameter. Model that one flag explicitly so the
+# native stub receives the same remaining thread/prompt values that real codex.exe receives.
+if ($Verb1 -ne 'exec' -or $Verb2 -ne 'resume' -or -not $json.IsPresent) { exit 9 }
+if ($Prompt -notmatch 'runwatch continuation delivery_id=') { exit 10 }
+[Console]::Out.WriteLine('{"type":"thread.started","thread_id":"' + $Thread + '"}')
+[Console]::Out.WriteLine('{"type":"turn.started"}')
+[Console]::Out.WriteLine('{"type":"item.completed","item":{"type":"agent_message","text":"stub"}}')
+[Console]::Out.WriteLine('{"type":"turn.completed"}')
+exit 0
+"#,
+        )
+        .unwrap();
+
+        let thread = "019c1234-5678-7000-8000-000000000014";
+        let rollout = root.join("rollout.jsonl");
+        std::fs::write(&rollout, b"{}\n").unwrap();
+        let store = Arc::new(RunStore::open_default().unwrap());
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "stub-host".into(),
+            cwd: "/stub/workspace".into(),
+        };
+        let binding = ContinuationBinding {
+            agent_kind: "codex".into(),
+            session_id: thread.into(),
+            session_file: Some(rollout.to_string_lossy().into_owned()),
+            origin_leaf_id: None,
+            project_root: root.to_string_lossy().into_owned(),
+            workspace: workspace.clone(),
+            adapter_path: None,
+        };
+        let now = Utc::now();
+        let run_id = "r9-codex-driver-stub";
+        let mut run = RunRecord::new(
+            run_id.into(),
+            workspace.host_alias.clone(),
+            RunnerKind::Slurm,
+        );
+        run.status = RunStatus::Submitting;
+        run.workspace = Some(workspace.clone());
+        run.attempt_no = Some(1);
+        run.session_id = Some(thread.into());
+        run.agent = Some("codex".into());
+        run.project_root = Some(binding.project_root.clone());
+        run.updated_at = now;
+        let attempt = RunAttemptRecord {
+            run_id: run_id.into(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: workspace.host_alias.clone(),
+            workdir: workspace.cwd.clone(),
+            command: "true".into(),
+            resources: RunResources::default(),
+            job_name: "rw-r9-codex-driver-stub-a1".into(),
+            job_id: Some("stub-job-1".into()),
+            script_path: "/stub/attempt-1.sh".into(),
+            stdout_path: "/stub/stdout.log".into(),
+            stderr_path: "/stub/stderr.log".into(),
+            terminal_path: "/stub/terminal.json".into(),
+            receipt_path: "/stub/submission.receipt".into(),
+            status: RunStatus::Queued,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, Some(&binding))
+                .unwrap()
+        );
+        run.status = RunStatus::Succeeded;
+        run.job_id = Some("stub-job-1".into());
+        run.updated_at = Utc::now();
+        store.upsert(&run).unwrap();
+        let delivery_id = store.ensure_terminal_delivery(&run).unwrap().unwrap();
+        let invocation = store
+            .reserve_offline_invocation(Duration::ZERO)
+            .unwrap()
+            .expect("Codex stub invocation should reserve");
+        let launcher = AgentLauncher {
+            executable: pwsh.into_os_string(),
+            prefix_args: vec![
+                OsString::from("-NoLogo"),
+                OsString::from("-NoProfile"),
+                OsString::from("-NonInteractive"),
+                OsString::from("-File"),
+                script.as_os_str().to_os_string(),
+            ],
+        };
+
+        run_codex_invocation_with_launcher(store.clone(), invocation, launcher)
+            .await
+            .expect("native Codex stub invocation");
+        assert_eq!(
+            store.get_delivery_state(&delivery_id).unwrap().as_deref(),
+            Some("delivered")
+        );
+        assert!(
+            store
+                .reserve_offline_invocation(Duration::ZERO)
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
 
