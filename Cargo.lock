@@ -1998,6 +1998,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "directories",
  "runwatch-core",
  "runwatch-engine",
  "runwatch-ssh",

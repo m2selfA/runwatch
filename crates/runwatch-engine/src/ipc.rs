@@ -113,7 +113,7 @@ fn hello_response(id: String) -> Response {
                 "hello", "daemon_status", "set_paused", "list_runs", "get_run", "get_observation", "adopt_run_v1", "tick", "wait_run", "submit_run_v2", "logs", "artifacts", "cancel_run",
                 "register_agent_session", "release_agent_session",
                 "claim_deliveries", "delivery_status", "ack_delivery", "rebind_continuation",
-                "verify_offline_invocation", "offline_pi_continuation"
+                "verify_offline_invocation", "offline_pi_continuation", "offline_codex_continuation"
             ],
         }),
     )
@@ -862,6 +862,13 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|value| value == "offline_pi_continuation")
+        );
+        assert!(
+            result["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "offline_codex_continuation")
         );
         assert!(
             result["capabilities"]

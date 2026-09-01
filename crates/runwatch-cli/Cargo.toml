@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
+directories.workspace = true
 runwatch-core.workspace = true
 runwatch-engine.workspace = true
 runwatch-ssh.workspace = true

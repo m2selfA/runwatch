@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
+use directories::UserDirs;
+use serde_json::Value;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -25,20 +28,41 @@ enum RegistrationState {
     Conflict(McpEntry),
 }
 
-fn codex_program() -> OsString {
-    if let Some(value) = std::env::var_os("RUNWATCH_CODEX_EXECUTABLE")
+fn validate_native_codex_program(program: &OsStr) -> Result<()> {
+    #[cfg(windows)]
+    if matches!(
+        Path::new(program)
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
+        Some("cmd" | "bat" | "ps1")
+    ) {
+        bail!(
+            "Codex adapter requires a native Windows executable, not a .cmd/.bat/.ps1 shim: {}",
+            PathBuf::from(program).display()
+        );
+    }
+    Ok(())
+}
+
+fn codex_program() -> Result<OsString> {
+    let program = if let Some(value) = std::env::var_os("RUNWATCH_CODEX_EXECUTABLE")
         && !value.is_empty()
     {
-        return value;
-    }
-    #[cfg(windows)]
-    {
-        OsString::from("codex.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        OsString::from("codex")
-    }
+        value
+    } else {
+        #[cfg(windows)]
+        {
+            OsString::from("codex.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            OsString::from("codex")
+        }
+    };
+    validate_native_codex_program(&program)?;
+    Ok(program)
 }
 
 fn run_codex<I, S>(args: I) -> Result<Output>
@@ -46,7 +70,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let program = codex_program();
+    let program = codex_program()?;
     let mut command = Command::new(&program);
     command.args(args).stdin(Stdio::null());
     #[cfg(windows)]
@@ -54,6 +78,24 @@ where
     command
         .output()
         .with_context(|| format!("launch {}", PathBuf::from(&program).display()))
+}
+
+fn codex_home() -> Result<PathBuf> {
+    if let Some(value) = std::env::var_os("CODEX_HOME")
+        && !value.is_empty()
+    {
+        return Ok(PathBuf::from(value));
+    }
+    let home = UserDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .context("cannot resolve Codex home directory")?;
+    Ok(home.join(".codex"))
+}
+
+fn sessions_root() -> Result<PathBuf> {
+    Ok(codex_home()?.join("sessions"))
 }
 
 fn mcp_file_name() -> &'static str {
@@ -203,6 +245,46 @@ fn codex_version() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn has_capability(value: &Value, capability: &str) -> bool {
+    value
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| item == capability))
+}
+
+fn daemon_compatibility(value: &Value) -> Result<()> {
+    let result = value
+        .get("result")
+        .context("runwatchd hello response has no result")?;
+    if result.get("service").and_then(Value::as_str) != Some("runwatchd") {
+        bail!("IPC peer is not runwatchd");
+    }
+    if result.get("storage").and_then(Value::as_str) != Some("sqlite-wal") {
+        bail!("runwatchd does not advertise sqlite-wal canonical storage");
+    }
+    for capability in ["submit_run_v2", "offline_codex_continuation"] {
+        if !has_capability(value, capability) {
+            bail!("runwatchd is missing required capability {capability}");
+        }
+    }
+    Ok(())
+}
+
+fn registration_readiness(state: &RegistrationState) -> Result<()> {
+    match state {
+        RegistrationState::Owned(entry) if entry.enabled => Ok(()),
+        RegistrationState::Owned(_) => bail!("Codex runwatch MCP registration is disabled"),
+        RegistrationState::Missing => bail!("Codex runwatch MCP registration is missing"),
+        RegistrationState::Conflict(entry) => bail!(
+            "Codex runwatch MCP name is a conflict (transport={}, command={}, args={})",
+            entry.transport,
+            entry.command.as_deref().unwrap_or("-"),
+            entry.args.as_deref().unwrap_or("-")
+        ),
+    }
+}
+
 fn require_success(output: Output, action: &str) -> Result<()> {
     if output.status.success() {
         return Ok(());
@@ -258,6 +340,115 @@ pub fn status() -> Result<()> {
         ),
     }
     Ok(())
+}
+
+pub async fn doctor() -> Result<()> {
+    let expected = consumer_safe_path(&sibling_mcp_candidate()?);
+    let mut reasons = Vec::<String>::new();
+
+    let launcher = match codex_program() {
+        Ok(program) => {
+            let launcher_text = PathBuf::from(&program).display().to_string();
+            match codex_version() {
+                Ok(version) => {
+                    println!("launcher=available command={launcher_text} version={version}");
+                    true
+                }
+                Err(error) => {
+                    println!("launcher=unavailable command={launcher_text} error={error}");
+                    reasons.push("codex_launcher_unavailable".into());
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            println!("launcher=unsupported error={error}");
+            reasons.push("codex_launcher_not_native".into());
+            false
+        }
+    };
+
+    println!(
+        "mcp_binary={} path={}",
+        if expected.is_file() {
+            "available"
+        } else {
+            "missing"
+        },
+        expected.display()
+    );
+    if !expected.is_file() {
+        reasons.push("runwatch_mcp_missing".into());
+    }
+
+    match sessions_root() {
+        Ok(root) if root.is_dir() => match fs::read_dir(&root) {
+            Ok(_) => println!("sessions=available path={}", root.display()),
+            Err(error) => {
+                println!("sessions=unreadable path={} error={error}", root.display());
+                reasons.push("codex_sessions_unreadable".into());
+            }
+        },
+        Ok(root) => println!("sessions=not_yet_created path={}", root.display()),
+        Err(error) => {
+            println!("sessions=unresolved error={error}");
+            reasons.push("codex_home_unresolved".into());
+        }
+    }
+
+    if launcher {
+        match registration_state(&expected) {
+            Ok(state) => {
+                match &state {
+                    RegistrationState::Missing => {
+                        println!("registration=missing name={MCP_NAME}")
+                    }
+                    RegistrationState::Owned(entry) => println!(
+                        "registration=installed name={MCP_NAME} enabled={} command={}",
+                        entry.enabled,
+                        entry.command.as_deref().unwrap_or("-")
+                    ),
+                    RegistrationState::Conflict(entry) => println!(
+                        "registration=conflict name={MCP_NAME} transport={} command={} args={}",
+                        entry.transport,
+                        entry.command.as_deref().unwrap_or("-"),
+                        entry.args.as_deref().unwrap_or("-")
+                    ),
+                }
+                if let Err(error) = registration_readiness(&state) {
+                    reasons.push(error.to_string());
+                }
+            }
+            Err(error) => {
+                println!("registration=error name={MCP_NAME} error={error}");
+                reasons.push("codex_mcp_status_error".into());
+            }
+        }
+    } else {
+        println!("registration=unknown name={MCP_NAME} reason=launcher_unavailable");
+    }
+
+    match runwatch_engine::ipc::probe_local_server().await {
+        Ok(value) => match daemon_compatibility(&value) {
+            Ok(()) => println!("daemon=compatible service=runwatchd storage=sqlite-wal"),
+            Err(error) => {
+                println!("daemon=incompatible error={error}");
+                reasons.push("runwatchd_incompatible".into());
+            }
+        },
+        Err(error) => {
+            println!("daemon=unreachable error={error}");
+            reasons.push("runwatchd_unreachable".into());
+        }
+    }
+
+    if reasons.is_empty() {
+        println!("ready=true");
+        Ok(())
+    } else {
+        println!("ready=false reasons={}", reasons.join(","));
+        bail!("Codex adapter is not ready: {}", reasons.join(", "))
+    }
 }
 
 pub fn install() -> Result<()> {
@@ -383,6 +574,53 @@ mod tests {
             consumer_safe_path(Path::new(r"\\?\UNC\server\share\runwatch-mcp.exe")),
             PathBuf::from(r"\\server\share\runwatch-mcp.exe")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_non_native_windows_codex_shims() {
+        for path in ["codex.cmd", "codex.bat", "codex.ps1"] {
+            assert!(validate_native_codex_program(OsStr::new(path)).is_err());
+        }
+        assert!(validate_native_codex_program(OsStr::new("codex.exe")).is_ok());
+    }
+
+    #[test]
+    fn doctor_requires_enabled_owned_mcp_and_codex_capable_daemon() {
+        let owned = RegistrationState::Owned(McpEntry {
+            enabled: true,
+            transport: "stdio".into(),
+            command: Some("runwatch-mcp".into()),
+            args: None,
+        });
+        assert!(registration_readiness(&owned).is_ok());
+        let disabled = RegistrationState::Owned(McpEntry {
+            enabled: false,
+            transport: "stdio".into(),
+            command: Some("runwatch-mcp".into()),
+            args: None,
+        });
+        assert!(registration_readiness(&disabled).is_err());
+        assert!(registration_readiness(&RegistrationState::Missing).is_err());
+
+        let compatible = serde_json::json!({
+            "ok": true,
+            "result": {
+                "service": "runwatchd",
+                "storage": "sqlite-wal",
+                "capabilities": ["submit_run_v2", "offline_codex_continuation"]
+            }
+        });
+        assert!(daemon_compatibility(&compatible).is_ok());
+        let old = serde_json::json!({
+            "ok": true,
+            "result": {
+                "service": "runwatchd",
+                "storage": "sqlite-wal",
+                "capabilities": ["submit_run_v2"]
+            }
+        });
+        assert!(daemon_compatibility(&old).is_err());
     }
 
     #[test]

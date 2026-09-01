@@ -336,7 +336,9 @@ Codex adapter 的安装权威仍然是 **Codex 自己的 MCP 配置管理面**�
 
 所有权判定是保守的：只有 `stdio + 无额外 args + command path 精确匹配 sibling runwatch-mcp` 才视为 runwatch 自己安装的 entry。不存在时 install/remove 幂等；同名但 transport/command/args 不匹配时进入 `conflict`，install 与 remove 都拒绝覆盖或删除。这样 runwatch 不会把用户已有的同名 MCP 当成自己的配置。
 
-Windows 对外部 consumer 写入路径前统一去除 Win32 verbatim prefix：`\\?\C:\... -> C:\...`、`\\?\UNC\server\share\... -> \\server\share\...`。这是 R10a 隔离 Codex 0.150.1 实机 round-trip 抓到的真实问题，沿用 R8 Task Scheduler 已验证的 consumer-safe path 原则。Codex 管理子进程使用 native `codex.exe`/显式 `RUNWATCH_CODEX_EXECUTABLE` 且 `CREATE_NO_WINDOW`，不依赖 PowerShell shim。R10b 将只增加只读 doctor/compatibility 聚合，不让 doctor 隐式安装或修改配置。
+Windows 对外部 consumer 写入路径前统一去除 Win32 verbatim prefix：`\\?\C:\... -> C:\...`、`\\?\UNC\server\share\... -> \\server\share\...`。这是 R10a 隔离 Codex 0.150.1 实机 round-trip 抓到的真实问题，沿用 R8 Task Scheduler 已验证的 consumer-safe path 原则。Codex 管理子进程使用 native `codex.exe`/显式 `RUNWATCH_CODEX_EXECUTABLE` 且 `CREATE_NO_WINDOW`，不依赖 PowerShell shim。
+
+R10b 的 `runwatch agent codex doctor` 是纯只读 readiness 聚合，不是安装入口。它同时验证 native launcher、sibling `runwatch-mcp`、sessions root 形态、owned+enabled MCP registration 与 daemon hello 中的 `offline_codex_continuation` capability，并把 `daemon unreachable` 与 `daemon incompatible` 分开报告。首次使用尚未生成 sessions 目录不会被误判为不支持；真正需要无人值守恢复时，ephemeral/缺失 rollout 仍由 R9 continuation preflight fail closed。R10c 再把 R9d 的真实 provider gate 固化成显式 opt-in、全隔离、可清理的 release acceptance，而不是让 doctor 隐式产生 provider 调用或配置写入。
 
 
 ## 安全边界

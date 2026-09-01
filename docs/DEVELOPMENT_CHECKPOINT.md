@@ -49,7 +49,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
 | R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
 | R9 | Additional coding-agent adapters, starting with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed** |
-| R10 | Production adapter onboarding + repeatable release acceptance | **in progress 2026-09-01 — R10a Codex install/status/remove completed; R10b read-only doctor/compatibility next** |
+| R10 | Production adapter onboarding + repeatable release acceptance | **in progress 2026-09-01 — R10a onboarding + R10b read-only doctor completed; R10c repeatable real-provider acceptance next** |
 
 ## R0 completion record
 
@@ -522,10 +522,20 @@ R9 proves the Codex adapter semantics. R10 productizes them so a user does not h
 - [x] The same isolated acceptance seeded a conflicting `runwatch` MCP pointing at `C:\Windows\System32\cmd.exe /d /c echo conflict`: `runwatch agent codex install` and `remove` both returned nonzero, `status` reported `registration=conflict`, and the foreign entry remained unchanged until explicit test cleanup. Temporary `CODEX_HOME` was deleted afterwards; the user's real Codex configuration was untouched.
 - [x] R10a closeout regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **96 passed, 0 failed, 8 ignored by default**. All prior Pi/Codex continuation, scheduler, SSH, service and MCP gates remain green.
 
-#### R10b — read-only Codex doctor/compatibility — next
+#### R10b — read-only Codex doctor/compatibility — completed 2026-09-01
 
-- [ ] Add one bounded read-only doctor surface covering installed CLI version/native launcher, sibling `runwatch-mcp`, persisted-session root, MCP ownership/registration, runwatchd reachability, and a final ready/not-ready reason. Do not inspect credentials or conversation content and do not mutate MCP configuration.
-- [ ] Encode the R9d provider gate as an explicit opt-in release acceptance with isolated runwatch state, disposable MCP registration, exact-thread/Delivery/rollout assertions, and guaranteed cleanup.
+- [x] Added `runwatch agent codex doctor`. It is a bounded read-only aggregator over native Codex launcher availability/version, sibling `runwatch-mcp`, persisted Codex sessions root, exact owned MCP registration/enabled state, and runwatchd IPC compatibility. It never calls `mcp add/remove`, never reads credentials, and never scans conversation content.
+- [x] Windows launcher readiness is stricter than onboarding discovery: unattended continuation requires a native executable and explicitly rejects `.cmd/.bat/.ps1` shell shims. The same native-launcher rule used by the offline Codex AgentAdapter is therefore visible before a scientific Run is submitted.
+- [x] A missing `~/.codex/sessions` directory is reported as `not_yet_created` but does not block first use; existing non-directory session roots do block readiness. MCP must be owned by this runwatch install **and enabled**.
+- [x] Daemon hello now advertises additive capability `offline_codex_continuation`. Doctor distinguishes `daemon=unreachable` from an older/incompatible daemon that responds but lacks the Codex continuation capability, instead of collapsing both into one error.
+- [x] Final `ready=true` requires all execution-critical conditions together: native Codex launcher, sibling MCP binary, owned+enabled MCP registration, and a reachable Codex-capable daemon. Every failed condition is printed as an actionable reason and the command exits nonzero; `status` remains the lighter registration-only view.
+- [x] Real isolated three-state acceptance on Codex 0.150.1 used an E:-only temporary `CODEX_HOME`, E:-only runwatch data dir and a unique named pipe: missing MCP + daemon offline -> nonzero with both reasons; installed MCP + daemon offline -> nonzero with only daemon reason; installed MCP + current isolated daemon -> **exit 0 / `ready=true`**. A second doctor call remained ready without mutations; fixture install/remove succeeded and the guarded E: temporary directory was deleted.
+- [x] R10b closeout regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **98 passed, 0 failed, 8 ignored by default**. All prior Pi/Codex continuation, scheduler, SSH, service and MCP gates remain green.
+
+#### R10c — repeatable real-provider release acceptance — next
+
+- [ ] Encode the R9d provider gate as an explicit opt-in release acceptance with isolated runwatch state, disposable MCP registration, exact-thread/Delivery/rollout assertions, and guaranteed cleanup. The acceptance must fail closed before touching the normal runwatch ledger or permanent Codex MCP configuration.
+- [ ] Preserve the current correctness evidence hierarchy: Run/Delivery/AgentInvocation in SQLite plus exact Codex thread identity and persisted rollout marker + matching `task_complete`. Process exit alone remains insufficient.
 - [ ] Keep Pi as the reference native adapter and Codex as the reference MCP-bound adapter; extract only protocol concepts that are actually common before adding further coding-agent CLIs.
 
 Safety invariants:

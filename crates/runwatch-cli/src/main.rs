@@ -33,6 +33,8 @@ enum AgentCmd {
 enum CodexCmd {
     /// Show Codex CLI and runwatch MCP registration state
     Status,
+    /// Run read-only Codex/runwatch compatibility checks
+    Doctor,
     /// Register the sibling runwatch-mcp binary with Codex
     Install,
     /// Remove the Codex MCP registration only when it belongs to this runwatch install
@@ -153,6 +155,7 @@ async fn main() -> Result<()> {
         Cmd::Agent { cmd } => match cmd {
             AgentCmd::Codex { cmd } => match cmd {
                 CodexCmd::Status => codex::status()?,
+                CodexCmd::Doctor => codex::doctor().await?,
                 CodexCmd::Install => codex::install()?,
                 CodexCmd::Remove => codex::remove()?,
             },
