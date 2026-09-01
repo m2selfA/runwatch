@@ -48,7 +48,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R6 | Branch lineage / rebind safety | **real same-session `/tree` block + explicit rebind recovery passed 2026-08-31** |
 | R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
 | R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
-| R9 | Additional coding-agent adapters, starting with Codex CLI | planned |
+| R9 | Additional coding-agent adapters, starting with Codex CLI | **in progress 2026-09-01 — R9a exact-thread MCP binding + durable submit completed; R9b terminal Delivery next** |
 
 ## R0 completion record
 
@@ -454,6 +454,35 @@ Remaining R8:
 - [x] Pre-commit secret preflight found no OpenSSH/RSA private-key blocks or common inline API key/password/secret assignments.
 - [x] Established the first repository baseline as commit **`ecf191a` — `feat: establish durable runwatch runtime baseline`**, containing the validated R0–R8/R2 implementation and documentation (43 files, 15,434 inserted lines).
 - [x] This restores historical traceability before R9 and removes the source/documentation drift risk exposed during R8c.
+
+## R9 — Codex CLI adapter
+
+### R9a — exact-thread binding + durable submission — completed 2026-09-01
+
+Architecture and acceptance:
+
+- [x] cap00 currently runs `codex-cli 0.150.1`; the installed CLI exposes `codex queue --thread <THREAD> --message <TEXT>` and `codex exec resume [SESSION_ID] [PROMPT] --json`.
+- [x] Codex app-server supplies the exact current thread id in MCP tool-call `_meta.threadId`; **the model never provides or chooses its own continuation thread id**.
+- [x] Codex rollout JSONL has `session_meta` as the first record with `payload.id`, `payload.session_id` and `payload.cwd`. R9 reads only this metadata record for normal binding. The real 0.150.1 rollout exposed that both identity fields are present, so the locator requires `id == session_id` when `session_id` exists, then requires that identity to equal MCP `threadId` and that `cwd` still exists.
+- [x] A nonexistent UUID passed to the installed `codex queue` fails explicitly (`no rollout found for thread id`) rather than reporting success, so `queue` is suitable as a live-first delivery attempt once the exact thread is bound.
+- [x] Added typed MCP `submit_science_run` with **no thread/session identity argument**. rmcp 3.1.4 moves request `_meta` into `RequestContext.meta` before `ServerHandler::call_tool`, so the handler reads `threadId` from `RequestContext.meta`, cross-checks the exact persisted Codex rollout, builds `ContinuationBinding { agent_kind="codex", session_id, session_file, project_root, workspace }`, then calls daemon `submit_run_v2`. Existing MCP `submit_run` remains the legacy/adopt surface.
+- [x] Generalized submission-time continuation validation for remote Slurm/LSF and Windows Local Process from `pi`-only to the explicit supported set `{pi,codex}`; unknown agent kinds still fail closed. This does **not** enable Codex terminal dispatch yet, so R9a cannot accidentally execute an incomplete continuation path.
+- [x] Real persisted Codex metadata gate passed against cap00 thread `01a05753-3b45-7001-9ddf-131f7dedd1b5`: the locator found the exact rollout, validated `id == session_id`, and resolved its existing cwd while reading only the first JSONL record.
+- [x] Real isolated MCP -> daemon -> gm00 Slurm gate passed: `_meta.threadId=019c1234-5678-7000-8000-000000000008` plus synthetic first-record-only Codex metadata produced Run `r9a_codex_mcp_0901_02`, Slurm Job **31738**, canonical `agent=codex`, exact `session_id`, project root sourced from session metadata, and `gm00:/share/home/shark/tmp`; after the submitting MCP process exited, a separate MCP client observed the same Run as **succeeded**.
+- [x] R9a validation: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **82 passed, 0 failed, 6 ignored by default**. The sixth ignored gate is the real Codex rollout locator and was explicitly run green. Temporary local daemon/SQLite/CODEX_HOME smoke state was removed after acceptance.
+
+### R9b — Codex terminal Delivery / AgentInvocation — next
+
+- [ ] Generalize the offline invocation reservation/lease code so agent identity is data-driven instead of hard-coded to `pi`; preserve all Pi tests and exact-session semantics.
+- [ ] Add Codex terminal delivery: live-first `codex queue`; offline fallback `codex exec resume <thread_id> --json`; require emitted `thread.started.thread_id` to equal the bound id exactly before accepting a resume.
+- [ ] Add deterministic Delivery-id evidence/recovery so a crash after Codex persists the continuation prompt but before runwatch records success cannot duplicate the scientific continuation.
+- [ ] Add final real Codex end-to-end acceptance: submit a short durable Run from a real Codex thread, terminate the initiating CLI, observe terminal, restore the exact thread, and continue without a human typing “continue”. R9a has already accepted the execution/binding half; this gate closes the continuation half.
+
+Safety invariants:
+
+- Never pass `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-bypass-hook-trust` for unattended continuation.
+- A missing/ephemeral rollout, thread-id mismatch, unavailable project cwd, or ambiguous resume is fail-closed and becomes retry/needs-attention, never a silently-created replacement thread.
+- Codex is an AgentAdapter only. Run state, scheduler ownership, observation and Delivery retry remain exclusively in `runwatchd`.
 
 ## Known transitional debt
 

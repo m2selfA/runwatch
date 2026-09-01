@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
+directories.workspace = true
 rmcp.workspace = true
 runwatch-core.workspace = true
 runwatch-engine.workspace = true

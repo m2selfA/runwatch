@@ -305,7 +305,25 @@ GUI 登录自启动与 daemon resident service 是两个独立设置：`Start GU
 
 ## MCP
 
-MCP 是通用适配面，不是 Pi MVP 主链路。Pi 首发仍优先 `pi-runs -> local IPC -> runwatchd`。MCP server 已迁移到官方 Rust SDK `rmcp 3.1.4`：通过 `server/discover` 支持 2026-07-28，同时保留 SDK 自身的 legacy initialize negotiation；9 个工具都有 typed `outputSchema` 和 structuredContent。`wait_run <= 60s` 是普通同步工具，更长等待只有客户端声明 `io.modelcontextprotocol/tasks` 时才 materialize 为 MCP Task，且 Task cancel 只取消 wait handle，不取消科研 Run。这样 MCP Tasks 是 transport-level observation lifecycle，不是第二份 Run runtime。
+MCP 是通用适配面，不是 Pi MVP 主链路。Pi 首发仍优先 `pi-runs -> local IPC -> runwatchd`。MCP server 已迁移到官方 Rust SDK `rmcp 3.1.4`：通过 `server/discover` 支持 2026-07-28，同时保留 SDK 自身的 legacy initialize negotiation；当前 **10 个工具**都有 typed `outputSchema` 和 structuredContent，其中 `submit_science_run` 是 R9 新增的 Codex exact-thread durable submit surface。`wait_run <= 60s` 是普通同步工具，更长等待只有客户端声明 `io.modelcontextprotocol/tasks` 时才 materialize 为 MCP Task，且 Task cancel 只取消 wait handle，不取消科研 Run。这样 MCP Tasks 是 transport-level observation lifecycle，不是第二份 Run runtime。
+
+### Codex CLI adapter（R9）
+
+Codex 不复制 `pi-runs`。它优先复用 MCP 作为 agent binding surface：Codex app-server 在 tool call 的 `_meta.threadId` 注入真实 thread id。rmcp 3.1.4 negotiated dispatch 会先把 request `_meta` 从 `CallToolRequestParams` 取出并放进 `RequestContext.meta`，因此 runwatch-mcp 在进入通用 tool router 前从 **`RequestContext.meta`** 提取 `threadId`。模型参数里不出现 `thread_id`，从而消除“模型把 Run 绑定到错误会话”的自由度。
+
+R9 的 binding 来源是两份互相校验的本地权威元数据：
+
+```text
+MCP _meta.threadId  ---- exact identity ----┐
+                                            ├─> ContinuationBinding(agent_kind=codex)
+~/.codex/sessions/**/rollout-*.jsonl        │
+first record: session_meta { id, session_id, cwd } ┘
+```
+
+session locator 只读取 rollout 第一条 `session_meta`，要求 `payload.id == _meta.threadId`，且真实 0.150.1 中若同时存在 `payload.session_id` 则进一步要求 `session_id == id`；取 `payload.cwd` 作为 project root，并要求该目录仍存在。正常绑定不会扫描对话正文。Codex 的 `origin_leaf_id` 为空，因为 Codex thread identity 本身是 R9 v1 的 continuation unit。R9a 已实测 `submit_science_run -> submit_run_v2 -> gm00 Slurm -> terminal`，提交 MCP client 退出后计算仍独立完成；Codex terminal dispatch 留给 R9b。
+
+terminal delivery 采用 live/offline 两层：运行中的 exact thread 优先 `codex queue --thread <id> --message <bounded completion>`；live 不可用时再以 `codex exec resume <id> --json <bounded completion>` 恢复持久 thread。offline worker 必须解析 JSONL 事件并验证实际 `thread.started.thread_id` 与 binding 完全一致；exit 0 本身不构成恢复成功。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
+
 
 ## 安全边界
 

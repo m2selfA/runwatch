@@ -1,3 +1,5 @@
+use crate::codex;
+use anyhow::{Context, Result as AnyResult, bail};
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -7,7 +9,9 @@ use rmcp::{
     task_manager::{TaskExit, TaskManager, TaskOptions},
     tool, tool_router,
 };
-use runwatch_core::{RunRecord, RunnerKind};
+use runwatch_core::{
+    ContinuationBinding, RemoteWorkspaceRef, RunRecord, RunResources, RunnerKind, SubmitRunSpec,
+};
 use runwatch_ssh::parse_ssh_config;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -50,6 +54,32 @@ struct SubmitArgs {
     terminal: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+struct SubmitScienceArgs {
+    run_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    host: String,
+    workdir: String,
+    #[serde(default = "default_runner")]
+    runner: String,
+    command: String,
+    #[serde(default)]
+    time: Option<String>,
+    #[serde(default)]
+    partition: Option<String>,
+    #[serde(default)]
+    queue: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(default)]
+    cpus: Option<u32>,
+    #[serde(default)]
+    mem: Option<String>,
+    #[serde(default)]
+    gpus: Option<u32>,
+}
+
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct ToolErrorView {
     error: String,
@@ -72,6 +102,7 @@ enum RunStatusView {
 enum RunnerKindView {
     Slurm,
     Lsf,
+    Process,
     File,
     Powershell,
 }
@@ -235,6 +266,100 @@ fn default_log_tail() -> u64 {
 
 fn default_runner() -> String {
     "slurm".into()
+}
+
+fn runner_from_name(value: &str) -> AnyResult<RunnerKind> {
+    match value.to_ascii_lowercase().as_str() {
+        "slurm" => Ok(RunnerKind::Slurm),
+        "lsf" => Ok(RunnerKind::Lsf),
+        "process" => Ok(RunnerKind::Process),
+        other => bail!("durable submission does not support runner {other}"),
+    }
+}
+
+fn thread_id_from_meta_value(meta: &Value) -> AnyResult<String> {
+    let thread_id = meta
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("Codex-bound submission requires MCP _meta.threadId")?;
+    if thread_id.len() > 128 {
+        bail!("MCP _meta.threadId exceeds 128 bytes");
+    }
+    Ok(thread_id.to_string())
+}
+
+fn build_codex_submit_spec(
+    args: SubmitScienceArgs,
+    thread_id: &str,
+    session: codex::CodexSessionMeta,
+) -> AnyResult<SubmitRunSpec> {
+    if session.thread_id != thread_id {
+        bail!("Codex session metadata thread id does not match MCP thread id");
+    }
+    let runner = runner_from_name(&args.runner)?;
+    let workspace = RemoteWorkspaceRef {
+        host_alias: if runner == RunnerKind::Process {
+            "local".into()
+        } else {
+            args.host
+        },
+        cwd: args.workdir,
+    };
+    let continuation = ContinuationBinding {
+        agent_kind: "codex".into(),
+        session_id: thread_id.to_string(),
+        session_file: Some(session.session_file),
+        origin_leaf_id: None,
+        project_root: session.cwd,
+        workspace: workspace.clone(),
+        adapter_path: None,
+    };
+    Ok(SubmitRunSpec {
+        run_id: args.run_id,
+        name: args.name,
+        workspace,
+        runner,
+        command: args.command,
+        resources: RunResources {
+            time: args.time,
+            partition: args.partition,
+            queue: args.queue,
+            account: args.account,
+            cpus: args.cpus,
+            mem: args.mem,
+            gpus: args.gpus,
+        },
+        continuation: Some(continuation),
+    })
+}
+
+async fn submit_science_run_for_codex(
+    args: SubmitScienceArgs,
+    thread_id: String,
+) -> CallToolResult {
+    let locator_id = thread_id.clone();
+    let session =
+        match tokio::task::spawn_blocking(move || codex::locate_codex_session(&locator_id)).await {
+            Ok(Ok(session)) => session,
+            Ok(Err(error)) => {
+                return structured_error(format!("Codex session binding failed: {error:#}"));
+            }
+            Err(error) => {
+                return structured_error(format!("Codex session binding task failed: {error}"));
+            }
+        };
+    let spec = match build_codex_submit_spec(args, &thread_id, session) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return structured_error(format!("Codex durable submission rejected: {error:#}"));
+        }
+    };
+    match runwatch_engine::ipc::call_local("submit_run_v2", json!({ "spec": spec })).await {
+        Ok(value) => structured(value.get("run").cloned().unwrap_or(Value::Null)),
+        Err(error) => daemon_error(error),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +529,20 @@ impl RunwatchMcp {
     }
 
     #[tool(
+        description = "Submit a new durable scientific Run and bind terminal continuation to the current Codex thread. Thread identity comes only from MCP _meta.threadId and is cross-checked against Codex session_meta; do not use this tool to adopt an already-submitted scheduler job.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<RunOutputView>(),
+        annotations(read_only_hint = false, destructive_hint = false, open_world_hint = true)
+    )]
+    async fn submit_science_run(
+        &self,
+        Parameters(_args): Parameters<SubmitScienceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(structured_error(
+            "submit_science_run requires MCP request metadata and must be invoked through the server handler",
+        ))
+    }
+
+    #[tool(
         description = "Ask runwatchd to poll every non-terminal Run once",
         output_schema = rmcp::handler::server::tool::schema_for_output::<TickOutputView>(),
         annotations(read_only_hint = false, destructive_hint = false, open_world_hint = true)
@@ -508,6 +647,29 @@ impl ServerHandler for RunwatchMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        if request.name == "submit_science_run" {
+            let args: SubmitScienceArgs = serde_json::from_value(Value::Object(
+                request.arguments.clone().unwrap_or_default(),
+            ))
+            .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+            // rmcp moves request _meta into RequestContext during negotiated dispatch before
+            // ServerHandler::call_tool runs. Read identity from that context, not from
+            // CallToolRequestParams (whose meta is intentionally taken/cleared by the SDK).
+            let meta = serde_json::to_value(&context.meta)
+                .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+            let thread_id = match thread_id_from_meta_value(&meta) {
+                Ok(thread_id) => thread_id,
+                Err(error) => {
+                    return Ok(CallToolResponse::Complete(structured_error(format!(
+                        "Codex thread binding unavailable: {error:#}"
+                    ))));
+                }
+            };
+            return Ok(CallToolResponse::Complete(
+                submit_science_run_for_codex(args, thread_id).await,
+            ));
+        }
+
         if request.name == "wait_run" {
             let params: WaitArgs = serde_json::from_value(Value::Object(
                 request.arguments.clone().unwrap_or_default(),
@@ -640,6 +802,7 @@ mod tests {
             "get_run",
             "list_hosts",
             "submit_run",
+            "submit_science_run",
             "tick",
             "wait_run",
             "logs",
@@ -648,6 +811,63 @@ mod tests {
         ] {
             assert!(names.contains(name), "missing tool {name}");
         }
+    }
+
+    #[test]
+    fn rmcp_call_tool_meta_preserves_codex_thread_id_shape() {
+        let thread = "019c1234-5678-7000-8000-000000000004";
+        let request: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "submit_science_run",
+            "arguments": { "run_id": "r9" },
+            "_meta": { "threadId": thread }
+        }))
+        .unwrap();
+        let meta = serde_json::to_value(request.meta.as_ref().unwrap()).unwrap();
+        assert_eq!(thread_id_from_meta_value(&meta).unwrap(), thread);
+    }
+
+    #[test]
+    fn codex_thread_metadata_and_submit_spec_are_not_model_supplied() {
+        let thread = "019c1234-5678-7000-8000-000000000003";
+        assert_eq!(
+            thread_id_from_meta_value(&json!({ "threadId": thread })).unwrap(),
+            thread
+        );
+        assert!(thread_id_from_meta_value(&json!({})).is_err());
+
+        let session = codex::CodexSessionMeta {
+            thread_id: thread.into(),
+            cwd: "C:/science/project".into(),
+            session_file: "C:/Users/test/.codex/sessions/rollout.jsonl".into(),
+        };
+        let spec = build_codex_submit_spec(
+            SubmitScienceArgs {
+                run_id: "r9-codex".into(),
+                name: Some("R9 smoke".into()),
+                host: "gm00".into(),
+                workdir: "/share/project".into(),
+                runner: "slurm".into(),
+                command: "python run.py".into(),
+                time: Some("00:10:00".into()),
+                partition: Some("gpu".into()),
+                queue: None,
+                account: None,
+                cpus: Some(4),
+                mem: Some("8G".into()),
+                gpus: Some(1),
+            },
+            thread,
+            session,
+        )
+        .unwrap();
+        let binding = spec.continuation.unwrap();
+        assert_eq!(binding.agent_kind, "codex");
+        assert_eq!(binding.session_id, thread);
+        assert_eq!(binding.project_root, "C:/science/project");
+        assert_eq!(binding.workspace.host_alias, "gm00");
+        assert_eq!(binding.workspace.cwd, "/share/project");
+        assert!(binding.origin_leaf_id.is_none());
+        assert!(binding.adapter_path.is_none());
     }
 
     #[test]

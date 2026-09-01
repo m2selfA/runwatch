@@ -1,3 +1,4 @@
+mod codex;
 mod server;
 
 use anyhow::Result;

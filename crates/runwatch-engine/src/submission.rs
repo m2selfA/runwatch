@@ -244,8 +244,11 @@ fn validate_spec(spec: &SubmitRunSpec) -> Result<()> {
         other => bail!("Remote Execution v2 does not support runner {other:?} yet"),
     }
     if let Some(binding) = &spec.continuation {
-        if binding.agent_kind != "pi" {
-            bail!("Remote Execution v2 currently supports continuation.agent_kind=pi only");
+        if !matches!(binding.agent_kind.as_str(), "pi" | "codex") {
+            bail!(
+                "Remote Execution v2 does not support continuation.agent_kind={}",
+                binding.agent_kind
+            );
         }
         if binding.session_id.trim().is_empty()
             || binding.project_root.contains(['\r', '\n', '\0'])
@@ -541,6 +544,23 @@ mod tests {
                 .scheduler_submit_command()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn submission_binding_accepts_codex_and_rejects_unknown_agents() {
+        let mut codex = spec(RunnerKind::Slurm);
+        codex.continuation = Some(runwatch_core::ContinuationBinding {
+            agent_kind: "codex".into(),
+            session_id: "019c1234-5678-7000-8000-000000000006".into(),
+            session_file: Some("C:/Users/test/.codex/sessions/rollout.jsonl".into()),
+            origin_leaf_id: None,
+            project_root: "C:/science".into(),
+            workspace: codex.workspace.clone(),
+            adapter_path: None,
+        });
+        assert!(SubmissionPlan::build(codex.clone()).is_ok());
+        codex.continuation.as_mut().unwrap().agent_kind = "unknown-agent".into();
+        assert!(SubmissionPlan::build(codex).is_err());
     }
 
     #[test]

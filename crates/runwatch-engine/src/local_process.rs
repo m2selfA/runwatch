@@ -225,7 +225,7 @@ fn validate_run_id(run_id: &str) -> Result<()> {
 }
 
 fn validate_binding(binding: &ContinuationBinding, workspace: &RemoteWorkspaceRef) -> Result<()> {
-    if binding.agent_kind != "pi"
+    if !matches!(binding.agent_kind.as_str(), "pi" | "codex")
         || binding.session_id.trim().is_empty()
         || binding.project_root.contains(['\r', '\n', '\0'])
         || &binding.workspace != workspace
@@ -689,6 +689,26 @@ mod tests {
         assert!(script.contains("Move-Item -LiteralPath $tmp -Destination $path -Force"));
         assert!(script.contains("terminal.json"));
         assert!(script.contains("-EncodedCommand"));
+    }
+
+    #[test]
+    fn local_binding_accepts_codex_and_rejects_unknown_agents() {
+        let workspace = RemoteWorkspaceRef {
+            host_alias: LOCAL_HOST_ALIAS.into(),
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+        };
+        let mut binding = ContinuationBinding {
+            agent_kind: "codex".into(),
+            session_id: "019c1234-5678-7000-8000-000000000007".into(),
+            session_file: Some("C:/Users/test/.codex/sessions/rollout.jsonl".into()),
+            origin_leaf_id: None,
+            project_root: "C:/science".into(),
+            workspace: workspace.clone(),
+            adapter_path: None,
+        };
+        assert!(validate_binding(&binding, &workspace).is_ok());
+        binding.agent_kind = "unknown-agent".into();
+        assert!(validate_binding(&binding, &workspace).is_err());
     }
 
     #[cfg(windows)]

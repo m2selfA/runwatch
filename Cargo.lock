@@ -2056,6 +2056,8 @@ name = "runwatch-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "directories",
  "rmcp",
  "runwatch-core",
  "runwatch-engine",
