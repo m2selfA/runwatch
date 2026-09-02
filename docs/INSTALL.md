@@ -16,6 +16,7 @@ Keep the three binaries together. The v1 Pi path uses the `runwatch` daemon/loca
 2. Optionally add that directory to `PATH`.
 3. Keep your cluster aliases in the normal OpenSSH `~/.ssh/config`; runwatch does not maintain a second host database.
    For Slurm/LSF Runs, choose a persistent shared workspace (for example a cluster home/project filesystem) that is mounted at the same path on login and compute nodes. Do not use login-node `/tmp` or node-local scratch unless the cluster explicitly documents it as shared; runwatch's sentinel/log/artifact paths must remain visible after the scheduler job runs.
+   Advanced/multi-config deployments may set `RUNWATCH_SSH_CONFIG` to an explicit OpenSSH config file. When set, runwatch uses that same file for Host alias discovery and `ssh -G`; it does not replace `USERPROFILE`/`HOME` or Pi configuration. The default remains the normal user OpenSSH config. Host-key verification is unchanged and still requires pre-existing trusted known-hosts entries.
 4. Start the resident runtime if you want unattended continuation across coding-agent exits:
 
 ```text

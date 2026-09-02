@@ -40,6 +40,7 @@ Pi coding agent
 | **pi-ssh-tools** | Pi 在线时的远端 workspace 读写/编辑/命令 | 长期 Run 生命周期、Pi 离线后的 watcher |
 
 三个项目只共享协议语义，不共享进程内 SSH 对象。`pi-ssh-tools` 可以继续使用系统 OpenSSH；runwatch 为长期低频轮询保留独立持久 transport。
+runwatch 的 OpenSSH 配置来源默认仍是用户的 `~/.ssh/config`；如需要明确的多配置/隔离 transport，可通过 `RUNWATCH_SSH_CONFIG` 指定单一 config 文件。alias discovery 与 `ssh -G` 必须使用同一来源，且该覆盖不改变 HOME、Pi agent 配置或 known-hosts 信任策略。
 
 ### Future Agent Integration boundary
 

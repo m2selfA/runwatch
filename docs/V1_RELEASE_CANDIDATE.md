@@ -54,17 +54,19 @@ The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b7937
 
 Already passed:
 
-- Rust fmt/check/unit matrix: 103 passed / 0 failed / 8 ignored after compatibility-field and resident-stop cleanup;
+- Rust fmt/check/unit matrix: 105 passed / 0 failed / 8 ignored after compatibility, resident-stop and explicit-SSH-config coverage;
 - packaged supervisor readiness and serve-child restart;
 - real Pi/provider Windows Local Process release gate;
 - real Pi/provider gm00 Slurm release gate on `/share/home/shark/tmp`;
 - exactly-once Delivery/AgentInvocation/session settlement checks;
 - mixed Local + Slurm resident restart qualification (173.802 s);
 - Windows resident stop/unregister acceptance: Task Scheduler `/End` was observed to leave its supervisor child alive, then termination of only the verified supervisor PID released both supervisor/serve ownership through the Job Object; package replacement is therefore gated on owner-lock release rather than Task Scheduler status alone.
+- focused same-session branch divergence/rebind with exactly one live completion + settlement after explicit `runs_rebind`;
+- focused completion-before-settlement daemon crash recovery with no duplicate completion;
+- focused real gm00 SSH transport interruption/recovery: Job 31753 remained running while Observation changed `fresh -> unreachable -> fresh`, then completed with exactly-once continuation settlement.
 
 Still blocking a v1 tag:
 
-- true endurance run covering prolonged concurrent workloads, daemon restart, transient SSH loss, terminal scheduler observation and offline Pi relaunch;
-- prolonged branch-divergence/rebind and completion/settlement crash-window coverage;
+- one true multi-hour endurance run from the current packaged layout that repeatedly combines concurrent Local + scheduler workloads with resident restart, SSH loss/recovery, branch rebind and completion/settlement crash recovery. All individual fault dimensions are qualified; duration/repetition under one resident authority is the remaining gate.
 
 No human `continue` message is permitted in the formal continuation gates.

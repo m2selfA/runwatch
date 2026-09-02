@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use glob::glob;
 use std::collections::{BTreeSet, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -36,11 +37,41 @@ impl SshHost {
     }
 }
 
-pub fn ssh_config_path() -> PathBuf {
-    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+fn ssh_config_path_from(
+    override_path: Option<OsString>,
+    userprofile: Option<OsString>,
+    home: Option<OsString>,
+) -> PathBuf {
+    if let Some(path) = override_path.filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    if let Some(home) = userprofile.or(home) {
         return PathBuf::from(home).join(".ssh").join("config");
     }
     PathBuf::from(".ssh/config")
+}
+
+pub fn ssh_config_path() -> PathBuf {
+    ssh_config_path_from(
+        std::env::var_os("RUNWATCH_SSH_CONFIG"),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn ssh_g_args_from(alias: &str, override_path: Option<OsString>) -> Vec<OsString> {
+    let mut args = Vec::new();
+    if let Some(path) = override_path.filter(|value| !value.is_empty()) {
+        args.push(OsString::from("-F"));
+        args.push(path);
+    }
+    args.push(OsString::from("-G"));
+    args.push(OsString::from(alias));
+    args
+}
+
+fn ssh_g_args(alias: &str) -> Vec<OsString> {
+    ssh_g_args_from(alias, std::env::var_os("RUNWATCH_SSH_CONFIG"))
 }
 
 pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
@@ -60,7 +91,7 @@ pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
 
 pub(crate) fn resolve_effective_host(alias: &str) -> Result<SshHost> {
     let output = Command::new("ssh")
-        .args(["-G", alias])
+        .args(ssh_g_args(alias))
         .output()
         .with_context(|| format!("run `ssh -G {alias}`"))?;
     if !output.status.success() {
@@ -230,6 +261,39 @@ fn expand_tilde(value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_config_override_is_explicit_and_does_not_replace_home_semantics() {
+        assert_eq!(
+            ssh_config_path_from(
+                Some(OsString::from("C:/isolated/ssh-config")),
+                Some(OsString::from("C:/Users/real")),
+                None,
+            ),
+            PathBuf::from("C:/isolated/ssh-config")
+        );
+        assert_eq!(
+            ssh_config_path_from(None, Some(OsString::from("C:/Users/real")), None),
+            PathBuf::from("C:/Users/real").join(".ssh").join("config")
+        );
+    }
+
+    #[test]
+    fn ssh_g_override_uses_the_same_explicit_config_source() {
+        assert_eq!(
+            ssh_g_args_from("gm00", Some(OsString::from("C:/isolated/ssh-config"))),
+            vec![
+                OsString::from("-F"),
+                OsString::from("C:/isolated/ssh-config"),
+                OsString::from("-G"),
+                OsString::from("gm00"),
+            ]
+        );
+        assert_eq!(
+            ssh_g_args_from("gm00", None),
+            vec![OsString::from("-G"), OsString::from("gm00")]
+        );
+    }
 
     #[test]
     fn discovers_exact_hosts_through_recursive_includes_without_wildcard_aliases() {
