@@ -48,7 +48,7 @@ The release ZIP must:
 - be byte-deterministic when generated twice from the same release binaries;
 - run from the extracted package without relying on `target/` or the source tree.
 
-The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b79377caad717ab32aadc1d3599c6b50b860e9ba8c7461309295d8ac7198`.
+The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b79377caad717ab32aadc1d3599c6b50b860e9ba8c7461309295d8ac7198`. The current HEAD `4888d39` candidate was rebuilt after the SSH-config/fault-hardening work and independently verified at **9,686,896 bytes**, SHA-256 `7bcfe151b56400de2695ff6e8f56f13743691e77c48cda282098b95295edd8f1`.
 
 ## Required release evidence
 
@@ -63,7 +63,8 @@ Already passed:
 - Windows resident stop/unregister acceptance: Task Scheduler `/End` was observed to leave its supervisor child alive, then termination of only the verified supervisor PID released both supervisor/serve ownership through the Job Object; package replacement is therefore gated on owner-lock release rather than Task Scheduler status alone.
 - focused same-session branch divergence/rebind with exactly one live completion + settlement after explicit `runs_rebind`;
 - focused completion-before-settlement daemon crash recovery with no duplicate completion;
-- focused real gm00 SSH transport interruption/recovery: Job 31753 remained running while Observation changed `fresh -> unreachable -> fresh`, then completed with exactly-once continuation settlement.
+- focused real gm00 SSH transport interruption/recovery: Job 31753 remained running while Observation changed `fresh -> unreachable -> fresh`, then completed with exactly-once continuation settlement;
+- current-package repeat qualification: 456.473 s, 2 rounds / 4 real cases, concurrent Local + Slurm, two serve restarts, two same-session rebind recoveries, Slurm Jobs 31755/31756 and exactly-once final remote continuation. It is intentionally not counted as the multi-hour gate.
 
 Still blocking a v1 tag:
 
