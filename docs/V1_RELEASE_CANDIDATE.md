@@ -70,6 +70,7 @@ Already passed:
 - first formal 7200-second session `soak-20260902153301-b21f6ed7` is preserved as failed/non-resumable evidence: round 1 passed Local + Slurm Job 31758 with resident restart; round 2 experienced real Pi provider 524/524/503 latency while short Slurm Job 31759 finished before the scheduled SSH cut. The harness failed closed, marks `failed:1`, and credits zero endurance time.
 - formal fault endurance now freezes an explicit seed/workload timing invariant: bounded seed timeout is separate from round timeout, run delay must exceed seed timeout by >=60 seconds for a >=7200 s target, and Slurm walltime equals delay + 120 seconds. Current next-session profile is delay 600 / seed timeout 480 / round timeout 1200.
 - clean formal session #2 `soak-20260902155301-4ddcb294` segment 1 passed: 1004.342 s, Local + Slurm Job 31760, both active across serve 50636 -> 84340, both exactly-once terminal continuations, and zero dirty segments. The same evidence session must accumulate the remaining duration and repeated fault coverage.
+- formal segment 2 passed and raised cumulative clean active time to 1710.483 s. It adds second serve restart, real SSH loss/recovery on Job 31761, and one real branch-rebind recovery with zero wrong-branch delivery; no dirty segments.
 
 Still blocking a v1 tag:
 
