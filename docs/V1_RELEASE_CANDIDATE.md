@@ -71,6 +71,7 @@ Already passed:
 - formal fault endurance now freezes an explicit seed/workload timing invariant: bounded seed timeout is separate from round timeout, run delay must exceed seed timeout by >=60 seconds for a >=7200 s target, and Slurm walltime equals delay + 120 seconds. Current next-session profile is delay 600 / seed timeout 480 / round timeout 1200.
 - clean formal session #2 `soak-20260902155301-4ddcb294` segment 1 passed: 1004.342 s, Local + Slurm Job 31760, both active across serve 50636 -> 84340, both exactly-once terminal continuations, and zero dirty segments. The same evidence session must accumulate the remaining duration and repeated fault coverage.
 - formal segment 2 passed and raised cumulative clean active time to 1710.483 s. It adds second serve restart, real SSH loss/recovery on Job 31761, and one real branch-rebind recovery with zero wrong-branch delivery; no dirty segments.
+- formal segment 3 is clean: cumulative active time 2469.190 s. Local completion-before-settlement crash occurred at completion=1/settlement=0, serve 86896 -> 80156 recovery finished the same Delivery with attempts=2/invocations=2 but still exactly one completion + settlement; Job 31762 also recovered without duplicate terminal delivery. Settlement-crash coverage is now 1, with no dirty segments.
 
 Still blocking a v1 tag:
 
