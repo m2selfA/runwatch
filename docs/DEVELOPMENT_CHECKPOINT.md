@@ -550,11 +550,15 @@ Safety invariants:
 
 The current development priority is to finish the already-proven Pi product path before any further AgentAdapter expansion.
 
-### R11a — release/distribution foundation — next
+### R11a — release/distribution foundation — completed 2026-09-02
 
-- [ ] Define a portable release layout for `runwatch`, `runwatch-mcp` and `runwatch-gui` with deterministic manifest/hash verification.
-- [ ] Keep formal release tooling Rust-native (for example an `xtask`/workspace utility) rather than making Python a runtime prerequisite for packaging. Existing untracked Python packaging experiments are prototypes only and are not part of the release architecture.
-- [ ] Verify unpacked sibling-binary operation independently of the source tree and document installation/startup boundaries used by `pi-runs`.
+- [x] Added workspace `xtask` as the formal Rust-native release tool. `cargo run -p xtask -- package` builds the release `runwatch`, `runwatch-mcp` and `runwatch-gui` sibling binaries and emits one deterministic ZIP; Python is not a packaging/runtime prerequisite. Existing untracked Python packaging experiments remain prototypes only and are not part of the release architecture.
+- [x] Package integrity is self-describing and fail-closed: `release-manifest.json` records schema/version/platform, required sibling layout, payload sizes and SHA-256; `SHA256SUMS.txt` covers exactly payload + manifest; `cargo run -p xtask -- verify <zip>` rejects wrong roots, missing/unexpected files, duplicate sums and size/hash mismatches.
+- [x] Release creation never overwrites an existing archive. It creates a same-directory `.partial-<pid>` file, fsyncs it and promotes it only after ZIP completion; an existing final archive is preserved and causes an explicit error instead of deletion/replacement.
+- [x] The first real Windows release build exposed a 1 MiB stack-local hashing buffer that overflowed the xtask main thread after Cargo had successfully built all three release binaries. Hashing now uses a 64 KiB heap buffer and has a 4 MiB regression test; the repeated real package gate then passed.
+- [x] Two packages generated independently from the same release binaries were byte-identical: `runwatch-v0.1.0-windows-x86_64.zip`, **9,683,276 bytes**, SHA-256 **`33d4b79377caad717ab32aadc1d3599c6b50b860e9ba8c7461309295d8ac7198`**. Both passed `xtask verify` with 5 manifest payload files.
+- [x] The first package was expanded into an isolated ignored `dist/r11a-unpacked` directory and its packaged `runwatch.exe --help` executed successfully (`UNPACKED_SMOKE=PASS`), proving the CLI runs from the extracted sibling layout rather than `target/` or the source execution path. `docs/INSTALL.md` now documents the Pi-first install boundary and Rust-native package/verify commands.
+- [x] R11a final regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; final `cargo test --all-targets` passed **102 tests / 0 failed / 8 ignored**, including the new large-payload hashing regression.
 
 ### R11b — Pi installation/readiness closure
 
