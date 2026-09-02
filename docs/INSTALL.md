@@ -15,6 +15,7 @@ Keep the three binaries together. The v1 Pi path uses the `runwatch` daemon/loca
 1. Extract the release ZIP to a stable per-user directory. Do not run directly from the ZIP viewer.
 2. Optionally add that directory to `PATH`.
 3. Keep your cluster aliases in the normal OpenSSH `~/.ssh/config`; runwatch does not maintain a second host database.
+   For Slurm/LSF Runs, choose a persistent shared workspace (for example a cluster home/project filesystem) that is mounted at the same path on login and compute nodes. Do not use login-node `/tmp` or node-local scratch unless the cluster explicitly documents it as shared; runwatch's sentinel/log/artifact paths must remain visible after the scheduler job runs.
 4. Start the resident runtime if you want unattended continuation across coding-agent exits:
 
 ```text

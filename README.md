@@ -24,6 +24,8 @@ Windows-first **Durable Run Lifecycle Authority** for long scientific computatio
 
 The first production release is intentionally **Pi-first**: `pi-runs` is the Pi Agent Integration Plane and `pi-ssh-tools` is the Pi-online remote workspace plane. The real Pi + runwatch + Slurm/Local Process continuation path is already functional; current work is distribution/install readiness, repeatable release acceptance, endurance testing and compatibility retirement. New coding-agent integrations are deferred until this v1 path is closed.
 
+Remote Slurm/LSF `workspace.cwd` is part of the durability contract: it must be a persistent filesystem visible at the same path from the SSH login node and scheduler compute nodes. runwatch places its attempt script, stdout/stderr, terminal sentinel and receipt under `<workspace>/.runwatch/<run_id>/`; node-local `/tmp` or scratch is therefore unsupported unless the cluster explicitly makes that path shared.
+
 ## Build
 
 ```text
