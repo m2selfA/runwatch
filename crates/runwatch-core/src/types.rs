@@ -63,14 +63,6 @@ pub enum RunnerKind {
     Powershell,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnComplete {
-    None,
-    Event,
-    Spawn,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteWorkspaceRef {
     pub host_alias: String,
@@ -224,10 +216,6 @@ pub struct RunRecord {
     pub session_id: Option<String>,
     pub project_root: Option<String>,
     pub agent: Option<String>,
-    pub on_complete: OnComplete,
-    pub on_success: Option<String>,
-    pub on_failure: Option<String>,
-    pub acked_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub note: Option<String>,
 }
@@ -247,10 +235,6 @@ impl RunRecord {
             session_id: None,
             project_root: None,
             agent: None,
-            on_complete: OnComplete::None,
-            on_success: None,
-            on_failure: None,
-            acked_at: None,
             updated_at: Utc::now(),
             note: None,
         }

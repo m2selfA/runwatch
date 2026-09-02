@@ -108,14 +108,6 @@ enum RunnerKindView {
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum OnCompleteView {
-    None,
-    Event,
-    Spawn,
-}
-
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct WorkspaceView {
     host_alias: String,
     cwd: String,
@@ -135,10 +127,6 @@ struct RunView {
     session_id: Option<String>,
     project_root: Option<String>,
     agent: Option<String>,
-    on_complete: OnCompleteView,
-    on_success: Option<String>,
-    on_failure: Option<String>,
-    acked_at: Option<String>,
     updated_at: String,
     note: Option<String>,
 }

@@ -8,7 +8,7 @@
     "name": { "type": ["string", "null"] },
     "host": { "type": "string", "description": "~/.ssh/config Host alias" },
     "job_id": { "type": ["string", "null"] },
-    "runner": { "enum": ["slurm", "lsf", "file", "powershell"] },
+    "runner": { "enum": ["slurm", "lsf", "process", "file", "powershell"] },
     "remote_terminal": { "type": ["string", "null"] },
     "status": { "enum": ["submitting", "queued", "running", "succeeded", "failed", "cancelled", "unknown"] },
     "workspace": {
@@ -23,23 +23,6 @@
     "session_id": { "type": ["string", "null"] },
     "project_root": { "type": ["string", "null"] },
     "agent": { "type": ["string", "null"] },
-    "on_complete": {
-      "enum": ["none", "event", "spawn"],
-      "description": "Legacy import compatibility only. New writers use none; runwatchd does not execute callback delivery from this field."
-    },
-    "on_success": {
-      "type": ["string", "null"],
-      "description": "Legacy import compatibility only. Shell callback execution is retired."
-    },
-    "on_failure": {
-      "type": ["string", "null"],
-      "description": "Legacy import compatibility only. Shell callback execution is retired."
-    },
-    "acked_at": {
-      "type": ["string", "null"],
-      "format": "date-time",
-      "description": "Legacy callback receipt retained for migration compatibility; new continuation delivery uses explicit Delivery rows."
-    },
     "updated_at": { "type": "string", "format": "date-time" },
     "note": { "type": ["string", "null"] }
   }

@@ -263,7 +263,7 @@ scheduler terminal 与 agent wakeup 必须分成两个事务阶段：
 
 这消除旧实现中“第一次 callback 失败后永不再试”以及“进程 spawn 成功就错误地当成 agent 已接受”的问题。
 
-旧 `on_success` / `on_failure` shell callback 已退休：历史字段仅保留用于旧 JSON/DB 反序列化，不再具有执行语义。新 continuation 一律进入 durable Delivery/outbox；CLI 若显式使用旧 callback 参数会 fail closed。
+旧 `on_complete` / `on_success` / `on_failure` / `acked_at` callback 字段已从当前 `RunRecord`、JSON schema 与 MCP output schema 删除；serde 对旧 JSON 的未知字段保持兼容，因此一次性 `runs.jsonl -> SQLite` importer 仍可读取历史记录而不会重新暴露 callback API。新 continuation 一律进入 durable Delivery/outbox；CLI 若显式使用隐藏的旧 callback 参数会 fail closed。
 
 ## Pi 首发路径
 

@@ -138,7 +138,7 @@ Landed slices:
 - [x] PowerShell test harnessing reconfirmed that its first redirected stdin line can carry a UTF-8 BOM. This was a harness artifact, not an MCP scheduler bug; production MCP framing remains normal UTF-8 JSONL.
 - [x] Hardened the local IPC authorization boundary. Windows named pipes are created with `PIPE_REJECT_REMOTE_CLIENTS` and an explicit DACL granting pipe access only to the current user SID plus `SYSTEM`; focused tests prove the current-user SID is available and an ACL-restricted pipe instance can be created. Unix data directories are tightened to `0700` and the Unix-domain socket to `0600`.
 - [x] Real same-user ACL smoke passed after hardening: an isolated daemon accepted `daemon-status` and `list` from a separate CLI process through the restricted named pipe.
-- [x] Retired legacy shell-string callbacks without breaking historical data import. `RunRecord.on_complete/on_success/on_failure/acked_at` remain deserializable compatibility fields, but `runwatch-engine` no longer contains callback shell execution or process-local polling `wait_run`; hidden CLI `--on-success/--on-failure` flags now fail explicitly before daemon/SSH access. Durable continuation uses explicit Delivery/outbox state only.
+- [x] Retired legacy shell-string callbacks without breaking historical data import. The v1 cleanup later removed `RunRecord.on_complete/on_success/on_failure/acked_at` from the current Rust model, JSON schema and MCP output schema entirely; serde still ignores those historical fields during the one-time `runs.jsonl` import. `runwatch-engine` contains no callback shell execution; hidden CLI `--on-success/--on-failure` flags fail explicitly before daemon/SSH access. Durable continuation uses explicit Delivery/outbox state only.
 - [x] Final authority scan: CLI/GUI/MCP contain **zero** `RunStore` references; GUI/MCP contain **zero** `serve_loop` references; MCP contains **zero** `HostPool` references. CLI `Status` only computes the ledger path and does not open SQLite.
 - [ ] Full MCP protocol modernization remains intentionally separate from R1c authority migration: the compatibility server still speaks the legacy `2024-11-05` handshake. Upgrade it coherently to the current 2026-07-28 MCP model/SDK and Tasks extension rather than changing only the advertised version.
 
@@ -586,17 +586,19 @@ The current development priority is to finish the already-proven Pi product path
 - [ ] Run multi-hour concurrent workloads covering daemon restart, transient SSH loss, scheduler completion, offline Pi relaunch, exactly-once settlement and branch-safe rebind.
 - [ ] Treat endurance failures as release blockers; do not hide them behind adapter-specific retry loops.
 
-### R11e — compatibility retirement + release candidate
+### R11e — compatibility retirement + release candidate — in progress 2026-09-02
 
-- [ ] Decide which legacy JSONL/callback compatibility fields still require migration support and remove/deprecate the rest without restoring a second writer.
-- [ ] Close install/upgrade/uninstall documentation, version compatibility diagnostics and a reproducible release-candidate checklist.
+- [x] Decided the legacy data boundary: keep only the one-time read-only `runs.jsonl -> SQLite` importer when the canonical runs table is empty. Current `RunRecord`, JSON schema and MCP output no longer expose `on_complete/on_success/on_failure/acked_at`; a regression feeds those old fields into the importer and proves they are ignored while the latest historical Run still imports. Hidden CLI callback flags remain only to fail closed with an explicit migration message.
+- [x] Added daemon build-version diagnostics to IPC `hello` while keeping compatibility capability-based: Pi v1 still requires protocol 1 + service/storage identity + its required capability set; an exact runwatch version match is intentionally **not** a compatibility gate.
+- [x] Real cross-project isolated doctor smoke passed after rebuilding the actual `target/debug/runwatch.exe`: current pi-runs reported `ready=true`, `runwatch.version=0.1.0`, protocol 1 and zero missing capabilities against a unique named pipe/data store. This also documented that `cargo test` alone does not refresh the ordinary debug binary used by external smokes; cross-project gates must build the executable they launch.
+- [x] Added `docs/V1_RELEASE_CANDIDATE.md` as the canonical v1 scope/compatibility/package/gate checklist. RC contract is frozen, but tagging remains blocked on R11d endurance evidence and the remaining resident upgrade/uninstall lifecycle closeout.
+- [ ] Close the resident install/upgrade/uninstall stop semantics so replacing/removing the sibling package cannot leave an old Task Scheduler supervisor holding the executable.
 
 ## Known transitional debt
 
 Until later phases complete, these are explicitly compatibility paths, not architecture to extend:
 
 - legacy `runs.jsonl` may remain as one-time migration/export compatibility input, but is no longer canonical storage.
-- `RunRecord` still carries deprecated callback compatibility fields for historical JSON/DB deserialization, but no runtime shell callback execution remains.
 - MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
 - Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd requires pre-existing known-hosts trust.
 - scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex both have real continuation evidence, but only the Pi path is in the current v1 release scope; remaining work is Pi-focused distribution/readiness, repeatable release acceptance, compatibility retirement and long-soak hardening.

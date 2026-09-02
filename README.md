@@ -19,6 +19,7 @@ Windows-first **Durable Run Lifecycle Authority** for long scientific computatio
 ## Data
 
 `%USERPROFILE%\\.runwatch\\runwatch.db` is the canonical SQLite WAL store. `config.yaml` remains the local configuration file; a legacy `runs.jsonl`, if present, is migration input only.
+The legacy importer is one-way/read-only: it is considered only when the canonical runs table is empty. Historical callback fields are ignored during deserialization and are no longer part of the current Run/MCP schema.
 
 ## Current release scope
 

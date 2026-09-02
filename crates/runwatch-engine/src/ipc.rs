@@ -107,6 +107,7 @@ fn hello_response(id: String) -> Response {
         id,
         json!({
             "protocol_version": PROTOCOL_VERSION,
+            "version": env!("CARGO_PKG_VERSION"),
             "service": "runwatchd",
             "storage": "sqlite-wal",
             "capabilities": [
@@ -827,6 +828,7 @@ mod tests {
         assert!(response.ok);
         let result = response.result.expect("hello result");
         assert_eq!(result["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(result["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(result["storage"], "sqlite-wal");
         assert!(
             result["capabilities"]
