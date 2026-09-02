@@ -67,9 +67,11 @@ Already passed:
 - current-package repeat qualification: 456.473 s, 2 rounds / 4 real cases, concurrent Local + Slurm, two serve restarts, two same-session rebind recoveries, Slurm Jobs 31755/31756 and exactly-once final remote continuation. It is intentionally not counted as the multi-hour gate.
 - focused Slurm-only packaged rebind on Job 31757 with explicit pi-runs + pi-ssh-tools extension loading: zero wrong-branch completion/settlement, exactly one rebind, Delivery attempt 2 final success and exact remote result inspection.
 - resumable-endurance harness qualification: two real Local Process segments reused the same durable SQLite/IPC authority with rounds 1 -> 2 and 193.195 s cumulative clean active time; frozen code/product/fault hashes reject changed-contract resume before any next segment is created, and dirty segment history cannot be washed out by later successes.
+- first formal 7200-second session `soak-20260902153301-b21f6ed7` is preserved as failed/non-resumable evidence: round 1 passed Local + Slurm Job 31758 with resident restart; round 2 experienced real Pi provider 524/524/503 latency while short Slurm Job 31759 finished before the scheduled SSH cut. The harness failed closed, marks `failed:1`, and credits zero endurance time.
+- formal fault endurance now freezes an explicit seed/workload timing invariant: bounded seed timeout is separate from round timeout, run delay must exceed seed timeout by >=60 seconds for a >=7200 s target, and Slurm walltime equals delay + 120 seconds. Current next-session profile is delay 600 / seed timeout 480 / round timeout 1200.
 
 Still blocking a v1 tag:
 
-- one true multi-hour endurance run from the current packaged layout that repeatedly combines concurrent Local + scheduler workloads with resident restart, SSH loss/recovery, branch rebind and completion/settlement crash recovery. All individual fault dimensions are qualified; duration/repetition under one resident authority is the remaining gate.
+- one **new, clean** multi-hour endurance evidence session from the current packaged layout whose read-only evaluator returns `v1_endurance.qualified=true`. The dirty `b21f6ed7` session is permanently excluded. All individual fault dimensions are qualified; duration/repetition under one frozen resident authority is the remaining gate.
 
 No human `continue` message is permitted in the formal continuation gates.
