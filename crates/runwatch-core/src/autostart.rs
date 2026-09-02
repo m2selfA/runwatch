@@ -14,6 +14,8 @@ const GUI_STARTUP_NAME: &str = "runwatch-gui.cmd";
 const LEGACY_GUI_STARTUP_NAME: &str = "runwatch.cmd";
 const DAEMON_TASK_NAME: &str = "runwatchd";
 pub const DEFAULT_DAEMON_INTERVAL_SEC: u64 = 20;
+#[cfg(windows)]
+const DAEMON_STOP_TIMEOUT_SEC: u64 = 10;
 
 pub fn gui_startup_dir() -> Result<PathBuf> {
     let appdata = std::env::var_os("APPDATA").context("APPDATA not set")?;
@@ -115,6 +117,30 @@ pub fn remove_daemon() -> Result<bool> {
     if !daemon_is_enabled() {
         return Ok(false);
     }
+
+    let end = schtasks(&["/End", "/TN", DAEMON_TASK_NAME])?;
+    if end.status.success() {
+        let naturally_stopped = wait_for_resident_runtime_stopped(
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(100),
+        )?;
+        if !naturally_stopped && crate::supervisor::owner_lock_held()? {
+            terminate_task_owned_supervisor()?;
+        }
+    } else if resident_runtime_owner_held()? {
+        require_schtasks(end, "stop runwatchd Task Scheduler task")?;
+    }
+
+    let stopped = wait_for_resident_runtime_stopped(
+        std::time::Duration::from_secs(DAEMON_STOP_TIMEOUT_SEC),
+        std::time::Duration::from_millis(100),
+    )?;
+    if !stopped {
+        bail!(
+            "runwatchd resident runtime is still active after {DAEMON_STOP_TIMEOUT_SEC}s; refusing to remove the Task Scheduler registration while the old package may still be in use"
+        );
+    }
+
     require_schtasks(
         schtasks(&["/Delete", "/TN", DAEMON_TASK_NAME, "/F"])?,
         "remove runwatchd Task Scheduler task",
@@ -125,6 +151,70 @@ pub fn remove_daemon() -> Result<bool> {
 #[cfg(not(windows))]
 pub fn remove_daemon() -> Result<bool> {
     Ok(false)
+}
+
+#[cfg(windows)]
+fn terminate_task_owned_supervisor() -> Result<()> {
+    if !crate::supervisor::owner_lock_held()? {
+        return Ok(());
+    }
+    let heartbeat = crate::supervisor::read()?.context(
+        "runwatch supervise lock is held but supervise.pid is missing or invalid; refusing to terminate an unverified process",
+    )?;
+    if heartbeat.pid == std::process::id() {
+        bail!("refusing to terminate the current process while removing runwatchd autostart");
+    }
+
+    let mut command = Command::new("taskkill.exe");
+    command
+        .args(["/PID", &heartbeat.pid.to_string(), "/F"])
+        .creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .output()
+        .with_context(|| format!("terminate runwatch supervisor pid {}", heartbeat.pid))?;
+    if !output.status.success() && crate::supervisor::owner_lock_held()? {
+        bail!(
+            "failed to terminate runwatch supervisor pid {} while removing autostart: stdout={} stderr={}",
+            heartbeat.pid,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn resident_runtime_owner_held() -> Result<bool> {
+    Ok(crate::supervisor::owner_lock_held()? || crate::live::owner_lock_held()?)
+}
+
+#[cfg(windows)]
+fn wait_for_resident_runtime_stopped(
+    timeout: std::time::Duration,
+    poll: std::time::Duration,
+) -> Result<bool> {
+    wait_for_resident_runtime_stopped_with(timeout, poll, resident_runtime_owner_held)
+}
+
+#[cfg(windows)]
+fn wait_for_resident_runtime_stopped_with<F>(
+    timeout: std::time::Duration,
+    poll: std::time::Duration,
+    mut owner_held: F,
+) -> Result<bool>
+where
+    F: FnMut() -> Result<bool>,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !owner_held()? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(std::time::Instant::now())));
+    }
 }
 
 #[cfg(windows)]
@@ -323,6 +413,31 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn resident_stop_wait_is_bounded_and_observes_release() {
+        let mut probes = 0;
+        let stopped = wait_for_resident_runtime_stopped_with(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+            || {
+                probes += 1;
+                Ok(probes < 3)
+            },
+        )
+        .expect("bounded resident stop wait");
+        assert!(stopped);
+        assert_eq!(probes, 3);
+
+        let stopped = wait_for_resident_runtime_stopped_with(
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            || Ok(true),
+        )
+        .expect("zero-timeout resident stop wait");
+        assert!(!stopped);
+    }
+
+    #[cfg(windows)]
+    #[test]
     #[ignore = "registers and deletes a unique real Windows Task Scheduler task"]
     fn real_task_scheduler_xml_registration_smoke() {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -469,6 +584,42 @@ mod tests {
             command.output().expect("taskkill runwatchd")
         }
 
+        fn lock_held(path: &Path) -> bool {
+            use fs2::FileExt;
+            use std::fs::OpenOptions;
+
+            let Ok(file) = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(path)
+            else {
+                return false;
+            };
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    let _ = file.unlock();
+                    false
+                }
+                Err(_) => true,
+            }
+        }
+
+        fn wait_for_runtime_locks_released(data_dir: &Path, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            loop {
+                let supervisor_held = lock_held(&data_dir.join("supervise.lock"));
+                let serve_held = lock_held(&data_dir.join("serve.lock"));
+                if !supervisor_held && !serve_held {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+
         let exe = PathBuf::from(
             std::env::var_os("RUNWATCH_R8C_EXE")
                 .expect("set RUNWATCH_R8C_EXE to the real runwatch.exe for this acceptance"),
@@ -524,7 +675,7 @@ mod tests {
         let create = schtasks(&["/Create", "/TN", &task_name, "/XML", &xml_arg, "/F"])
             .expect("create R8c task");
         if !create.status.success() {
-            let _ = fs::remove_dir_all(&root);
+            eprintln!("R8C_EVIDENCE_PRESERVED {}", root.display());
             panic!(
                 "R8c task registration failed: stdout={} stderr={}",
                 String::from_utf8_lossy(&create.stdout),
@@ -613,15 +764,26 @@ mod tests {
             );
         });
 
-        let _ = schtasks(&["/End", "/TN", &task_name]);
-        if let Some(pid) = read_pid(&data_dir.join("supervise.pid")) {
-            let _ = taskkill(pid);
-        }
-        if let Some(pid) = read_pid(&data_dir.join("serve.pid")) {
-            let _ = taskkill(pid);
+        let end = schtasks(&["/End", "/TN", &task_name]).expect("end R8c task");
+        let naturally_released =
+            wait_for_runtime_locks_released(&data_dir, Duration::from_millis(500));
+        let supervisor_pid = read_pid(&data_dir.join("supervise.pid"));
+        let supervisor_kill = if !naturally_released {
+            supervisor_pid.map(taskkill)
+        } else {
+            None
+        };
+        let runtime_released = wait_for_runtime_locks_released(&data_dir, Duration::from_secs(10));
+        if !runtime_released {
+            if let Some(pid) = read_pid(&data_dir.join("supervise.pid")) {
+                let _ = taskkill(pid);
+            }
+            if let Some(pid) = read_pid(&data_dir.join("serve.pid")) {
+                let _ = taskkill(pid);
+            }
         }
         let delete = schtasks(&["/Delete", "/TN", &task_name, "/F"]).expect("delete R8c task");
-        let _ = fs::remove_dir_all(&root);
+        eprintln!("R8C_EVIDENCE_PRESERVED {}", root.display());
         assert!(
             delete.status.success(),
             "R8c temporary task should be deleted: {} {}",
@@ -632,5 +794,26 @@ mod tests {
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
         }
+        assert!(
+            end.status.success(),
+            "Task Scheduler /End should stop the disposable supervisor: {} {}",
+            String::from_utf8_lossy(&end.stdout),
+            String::from_utf8_lossy(&end.stderr)
+        );
+        if let Some(kill) = supervisor_kill {
+            assert!(
+                kill.status.success(),
+                "verified task-owned supervisor should terminate after /End: {} {}",
+                String::from_utf8_lossy(&kill.stdout),
+                String::from_utf8_lossy(&kill.stderr)
+            );
+        }
+        assert!(
+            runtime_released,
+            "after Task Scheduler /End, terminating only the verified supervisor PID must release supervise.lock and serve.lock via the supervisor Job Object"
+        );
+        eprintln!(
+            "R8C_TASK_END natural_release={naturally_released} supervisor_pid={supervisor_pid:?} runtime_released={runtime_released}"
+        );
     }
 }

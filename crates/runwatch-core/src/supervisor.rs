@@ -53,6 +53,24 @@ pub fn read() -> Result<Option<SupervisorHeartbeat>> {
     Ok(serde_json::from_str(&text).ok())
 }
 
+pub fn owner_lock_held() -> Result<bool> {
+    ensure_data_dir()?;
+    let path = lock_path()?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open supervisor lock {}", path.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            file.unlock()?;
+            Ok(false)
+        }
+        Err(_) => Ok(true),
+    }
+}
+
 struct SupervisorLock {
     file: fs::File,
 }

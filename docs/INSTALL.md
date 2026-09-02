@@ -23,13 +23,30 @@ runwatch.exe autostart --install
 runwatch.exe daemon-status
 ```
 
-The Task Scheduler entry runs as the current interactive user so the daemon sees the same SSH config, keys and agent environment. `runwatch autostart --remove` removes the resident task.
+The Task Scheduler entry runs as the current interactive user so the daemon sees the same SSH config, keys and agent environment. `runwatch autostart --remove` is a **stop-then-unregister** operation: it asks Task Scheduler to end the owned task, verifies the resident supervisor/serve ownership locks, and if the Task action host left its supervisor child alive, terminates only the verified supervisor PID before deleting the registration. It deliberately does not use `taskkill /T`, so durable breakaway Local Process workloads are not treated as service children to cancel.
 
 ## Pi + pi-runs
 
 Install `pi-runs` in Pi separately, then keep `runwatchd` reachable through the normal local IPC endpoint. `pi-runs` is not a second daemon manager and does not copy runwatch binaries into the Pi package. Its active `auto|runwatch` backend uses runwatch only and fails closed if the daemon/capability contract is unavailable; the old `legacy` backend is retired and also fails closed.
 
 Inside Pi, `runs_doctor` is the read-only v1 readiness check. A healthy installation reports `ready=true`, `selected_backend=runwatch`, protocol 1, the daemon `version` for diagnostics, `service=runwatchd`, `storage=sqlite-wal`, and no missing Pi v1 capabilities. Compatibility is protocol/capability based rather than exact-version based. It never installs or starts runwatch; if the resident daemon is absent, start/fix the runwatch service.
+
+## Upgrade
+
+1. Close the tray GUI so `runwatch-gui.exe` is not holding the package directory. If GUI logon autostart is enabled, its Startup entry may remain in place for an in-place upgrade to the same directory.
+2. From the **currently installed/old** package, run `runwatch.exe autostart --remove`. Do not replace binaries first: the old executable owns the Task Scheduler registration and knows how to stop its resident supervisor safely.
+3. Replace the entire sibling package directory as one unit; do not mix versions of `runwatch.exe`, `runwatch-mcp.exe`, and `runwatch-gui.exe`.
+4. From the new package, run `runwatch.exe autostart --install`, then `runwatch.exe daemon-status` and Pi `runs_doctor`.
+
+Stopping the resident runtime for upgrade does **not** request Run cancellation. Remote Slurm/LSF jobs continue independently, and Windows Local Process workloads are created with the durable breakaway contract; the new daemon resumes observation after installation. If `autostart --remove` reports that an independent runtime still owns a lock, fix/stop that runtime explicitly rather than deleting the Task Scheduler registration underneath it.
+
+## Uninstall
+
+1. If GUI logon autostart is enabled, turn it off from the GUI, then exit the tray GUI.
+2. Run `runwatch.exe autostart --remove` and confirm `runwatch.exe autostart` reports `daemon=disabled`.
+3. The extracted sibling package directory can then be moved to the Windows Recycle Bin.
+
+Uninstall does **not** remove `%USERPROFILE%\\.runwatch`, `runwatch.db`, SSH configuration, Pi configuration, or scientific workspaces. Keep that state for reinstall/audit unless you intentionally decide to retire it separately.
 
 ## Codex CLI reference adapter (post-v1 backlog)
 

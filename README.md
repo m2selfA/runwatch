@@ -36,6 +36,7 @@ cargo build -p runwatch-gui --release
 
 The GUI is `#![windows_subsystem = "windows"]`, embeds `assets/icon.ico`,
 hides to the tray on close and can install a Startup-folder shortcut. The project is migrating toward a single `runwatchd` owner with local IPC; see `docs/DEVELOPMENT_CHECKPOINT.md` for the exact current boundary.
+Windows install/upgrade/uninstall semantics are documented in `docs/INSTALL.md`. Resident removal is stop-then-unregister and fails closed if an independent owner remains; it does not cancel durable scientific Runs or remove `%USERPROFILE%\\.runwatch` state.
 
 ```text
 runwatch serve --interval 20

@@ -54,17 +54,17 @@ The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b7937
 
 Already passed:
 
-- Rust fmt/check/unit matrix: 102 passed / 0 failed / 8 ignored after compatibility-field cleanup;
+- Rust fmt/check/unit matrix: 103 passed / 0 failed / 8 ignored after compatibility-field and resident-stop cleanup;
 - packaged supervisor readiness and serve-child restart;
 - real Pi/provider Windows Local Process release gate;
 - real Pi/provider gm00 Slurm release gate on `/share/home/shark/tmp`;
 - exactly-once Delivery/AgentInvocation/session settlement checks;
-- mixed Local + Slurm resident restart qualification (173.802 s).
+- mixed Local + Slurm resident restart qualification (173.802 s);
+- Windows resident stop/unregister acceptance: Task Scheduler `/End` was observed to leave its supervisor child alive, then termination of only the verified supervisor PID released both supervisor/serve ownership through the Job Object; package replacement is therefore gated on owner-lock release rather than Task Scheduler status alone.
 
 Still blocking a v1 tag:
 
 - true endurance run covering prolonged concurrent workloads, daemon restart, transient SSH loss, terminal scheduler observation and offline Pi relaunch;
 - prolonged branch-divergence/rebind and completion/settlement crash-window coverage;
-- resident upgrade/uninstall closeout that proves an old scheduled supervisor cannot retain the package executable.
 
 No human `continue` message is permitted in the formal continuation gates.
