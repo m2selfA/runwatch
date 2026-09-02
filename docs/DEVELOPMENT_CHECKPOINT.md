@@ -560,10 +560,12 @@ The current development priority is to finish the already-proven Pi product path
 - [x] The first package was expanded into an isolated ignored `dist/r11a-unpacked` directory and its packaged `runwatch.exe --help` executed successfully (`UNPACKED_SMOKE=PASS`), proving the CLI runs from the extracted sibling layout rather than `target/` or the source execution path. `docs/INSTALL.md` now documents the Pi-first install boundary and Rust-native package/verify commands.
 - [x] R11a final regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; final `cargo test --all-targets` passed **102 tests / 0 failed / 8 ignored**, including the new large-payload hashing regression.
 
-### R11b — Pi installation/readiness closure
+### R11b — Pi installation/readiness closure — completed 2026-09-02
 
-- [ ] Make the supported `pi-runs -> local IPC -> runwatchd` installation/readiness path explicit and diagnosable without introducing a second control plane.
-- [ ] Verify resident runwatchd startup, Pi extension loading, capability discovery and fail-closed behavior from the release layout.
+- [x] The supported boundary is now explicit across runwatch `docs/INSTALL.md` and pi-runs README/design: the runwatch portable package and Pi package are installed separately; `pi-runs -> local IPC -> runwatchd` is the only v1 durable authority path, pi-runs copies no runwatch binaries and manages no second daemon. Pi-facing `runs_doctor` is read-only and reports protocol/service/storage identity plus the complete required Pi v1 capability contract; legacy remains explicit migration-only.
+- [x] Release-layout resident smoke passed from the R11a extracted package. Packaged `runwatch.exe supervise --interval 1` (supervisor PID **68628**) launched IPC-ready serve PID **50472** on isolated state/pipe; pi-runs doctor returned `ready=true` with zero missing capabilities and Pi 0.84.4 loaded the modified extension successfully.
+- [x] Resident recovery from the package also passed: after deliberately terminating serve PID 50472, the same packaged supervisor replaced it with PID **39760**; `daemon-status` recovered and pi-runs doctor again returned `ready=true`. Test cleanup stopped the supervisor and remaining child processes; no normal runwatch store/configuration was used.
+- [x] Fail-closed readiness is covered on the Pi side for daemon-unavailable, missing capability, unexpected service identity and explicit legacy selection. A real default-endpoint probe while no resident daemon was running returned `ready=false`/ENOENT rather than selecting the legacy ledger.
 
 ### R11c — repeatable real-Pi release acceptance
 

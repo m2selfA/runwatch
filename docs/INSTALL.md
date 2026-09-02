@@ -28,6 +28,8 @@ The Task Scheduler entry runs as the current interactive user so the daemon sees
 
 Install `pi-runs` in Pi separately, then keep `runwatchd` reachable through the normal local IPC endpoint. `pi-runs` is not a second daemon manager and does not copy runwatch binaries into the Pi package. Its default `auto` backend uses runwatch only and fails closed if the daemon/capability contract is unavailable; legacy paths require explicit opt-in.
 
+Inside Pi, `runs_doctor` is the read-only v1 readiness check. A healthy installation reports `ready=true`, `selected_backend=runwatch`, protocol 1, `service=runwatchd`, `storage=sqlite-wal`, and no missing Pi v1 capabilities. It never installs or starts runwatch; if the resident daemon is absent, start/fix the runwatch service rather than switching to legacy.
+
 ## Codex CLI reference adapter (post-v1 backlog)
 
 Register the packaged MCP binary and check readiness:
