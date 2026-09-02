@@ -1,8 +1,6 @@
 # runwatch
 
-Windows-first watcher for durable **runs** on SSH hosts and HPC login nodes.
-Keeps a multiplexed russh session per `~/.ssh/config` Host alias, polls job
-completion, and can wake an agent.
+Windows-first **Durable Run Lifecycle Authority** for long scientific computation. `runwatchd` owns canonical Run/Attempt/Observation/Delivery state, remote scheduler lifecycle and durable continuation while the initiating coding agent may be gone.
 
 - 痛点：[docs/pain-points.md](docs/pain-points.md)
 - 设计：[docs/design.md](docs/design.md)
@@ -16,11 +14,15 @@ completion, and can wake an agent.
 | `runwatch-engine` | | shared tick / wait / serve loop |
 | `runwatch-cli` | `runwatch` | console CLI for agents |
 | `runwatch-gui` | `runwatch-gui` | windui tray + main window (no console) |
-| `runwatch-mcp` | `runwatch-mcp` | stdio MCP for Pi / Claude / Codex |
+| `runwatch-mcp` | `runwatch-mcp` | generic stdio MCP surface; Pi v1 uses `pi-runs` local IPC instead |
 
 ## Data
 
 `%USERPROFILE%\\.runwatch\\runwatch.db` is the canonical SQLite WAL store. `config.yaml` remains the local configuration file; a legacy `runs.jsonl`, if present, is migration input only.
+
+## Current release scope
+
+The first production release is intentionally **Pi-first**: `pi-runs` is the Pi Agent Integration Plane and `pi-ssh-tools` is the Pi-online remote workspace plane. The real Pi + runwatch + Slurm/Local Process continuation path is already functional; current work is distribution/install readiness, repeatable release acceptance, endurance testing and compatibility retirement. New coding-agent integrations are deferred until this v1 path is closed.
 
 ## Build
 
@@ -39,9 +41,9 @@ runwatch-mcp          # stdio MCP: list_runs, submit_run, tick, wait_run, list_h
 runwatch-gui
 ```
 
-## Codex CLI adapter
+## Validated Codex reference adapter (frozen for v1)
 
-runwatch can bind a scientific Run to the exact persisted Codex CLI thread that submitted it. Submission uses the Codex MCP tool metadata for thread identity; terminal continuation is owned by `runwatchd` and resumes that same thread offline when needed.
+R9/R10 proved that the continuation model can support Codex as a structurally different second adapter: exact MCP thread binding, persisted rollout evidence and offline exact-thread resume all passed real-provider acceptance. This code remains regression-covered reference evidence, but **Codex is not part of the current v1 release gate and no further Codex productization is planned until runwatch + pi-runs are complete**. A future design would move Codex-specific integration into a separate Agent Integration project rather than further coupling it to runwatch.
 
 For a packaged install where `runwatch`, `runwatch-mcp`, and the GUI live beside one another:
 
@@ -54,9 +56,11 @@ runwatch agent codex remove
 
 `install` is idempotent and refuses to overwrite an unrelated MCP entry named `runwatch`. `doctor` is read-only: it checks the native Codex launcher, sibling `runwatch-mcp`, the persisted-session root, owned/enabled MCP registration, and daemon compatibility. A fresh Codex install with no sessions yet is allowed; an unavailable or incompatible daemon is reported separately.
 
-### Real-provider release acceptance
+### Historical/explicit Codex reference acceptance
 
 The release harness performs a **real Codex provider turn and a real short Slurm job**. Run it only when those external effects are intended:
+
+This is a reference/diagnostic gate, not a blocker for the Pi-first v1 release.
 
 ```text
 python scripts/acceptance/codex_real_provider.py \

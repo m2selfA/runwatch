@@ -8,7 +8,7 @@
 
 Run 是产品对象；SSH 连接、Slurm / LSF JobID、sentinel 文件和 agent 进程都只是句柄。runwatch 的职责不是替代调度器，也不是成为远端 IDE，而是保证 coding agent 退出后，计算仍被可靠观察，并在终态时把 continuation 可靠地交回正确的 agent 会话。
 
-目标场景首先是 Windows 桌面上的 Pi coding agent + 远端 Linux HPC，随后复用同一核心接 Codex CLI 等其它 agent。
+当前产品目标固定为 Windows 桌面上的 Pi coding agent + 远端 Linux HPC / Windows 本地 durable Process。只有在 `runwatch` + `pi-runs` v1 完整收口后，才重新开启其它 coding agent 的产品化；R9/R10 已验证的 Codex 路径在此之前只作为第二适配器参考证据。
 
 ## 三个平面与唯一权威
 
@@ -40,6 +40,10 @@ Pi coding agent
 | **pi-ssh-tools** | Pi 在线时的远端 workspace 读写/编辑/命令 | 长期 Run 生命周期、Pi 离线后的 watcher |
 
 三个项目只共享协议语义，不共享进程内 SSH 对象。`pi-ssh-tools` 可以继续使用系统 OpenSSH；runwatch 为长期低频轮询保留独立持久 transport。
+
+### Future Agent Integration boundary
+
+Pi 是当前唯一发布目标的 Agent Integration Plane。未来若恢复 Codex 等 agent 支持，应采用与 `pi-runs` 对称的独立集成项目（例如设计中的 `codex-runs`），由该项目持有 agent-specific session identity、resume/settlement evidence、onboarding 与 UX；`runwatchd` 最终只保留 agent-neutral `ContinuationBinding` / `Delivery` / `AgentInvocation` 契约。当前仓库中已经实现的 Codex `_meta.threadId`、rollout scanner、`codex exec resume` 与 onboarding 代码属于已验证的过渡参考实现，**当前阶段不继续扩张，也暂不创建 `codex-runs` 仓库**。
 
 ## 目标分层
 
@@ -305,9 +309,9 @@ GUI 登录自启动与 daemon resident service 是两个独立设置：`Start GU
 
 ## MCP
 
-MCP 是通用适配面，不是 Pi MVP 主链路。Pi 首发仍优先 `pi-runs -> local IPC -> runwatchd`。MCP server 已迁移到官方 Rust SDK `rmcp 3.1.4`：通过 `server/discover` 支持 2026-07-28，同时保留 SDK 自身的 legacy initialize negotiation；当前 **10 个工具**都有 typed `outputSchema` 和 structuredContent，其中 `submit_science_run` 是 R9 新增的 Codex exact-thread durable submit surface。`wait_run <= 60s` 是普通同步工具，更长等待只有客户端声明 `io.modelcontextprotocol/tasks` 时才 materialize 为 MCP Task，且 Task cancel 只取消 wait handle，不取消科研 Run。这样 MCP Tasks 是 transport-level observation lifecycle，不是第二份 Run runtime。
+MCP 是通用协议面，不是 Pi v1 主链路。Pi 首发固定走 `pi-runs -> local IPC -> runwatchd`。MCP server 已迁移到官方 Rust SDK `rmcp 3.1.4`：通过 `server/discover` 支持 2026-07-28，同时保留 SDK 自身的 legacy initialize negotiation；当前工具均有 typed `outputSchema` 和 structuredContent。R9 添加的 `submit_science_run` / Codex `_meta.threadId` 绑定属于第二适配器实验形成的过渡 surface，不应被当成未来所有 agent 都要嵌入 runwatch-mcp 的模板。`wait_run <= 60s` 是普通同步工具，更长等待只有客户端声明 `io.modelcontextprotocol/tasks` 时才 materialize 为 MCP Task，且 Task cancel 只取消 wait handle，不取消科研 Run。这样 MCP Tasks 是 transport-level observation lifecycle，不是第二份 Run runtime。
 
-### Codex CLI adapter（R9）
+### Codex CLI reference adapter（R9/R10，v1 冻结）
 
 Codex 不复制 `pi-runs`。它优先复用 MCP 作为 agent binding surface：Codex app-server 在 tool call 的 `_meta.threadId` 注入真实 thread id。rmcp 3.1.4 negotiated dispatch 会先把 request `_meta` 从 `CallToolRequestParams` 取出并放进 `RequestContext.meta`，因此 runwatch-mcp 在进入通用 tool router 前从 **`RequestContext.meta`** 提取 `threadId`。模型参数里不出现 `thread_id`，从而消除“模型把 Run 绑定到错误会话”的自由度。
 
@@ -328,9 +332,9 @@ R9c 不把 `codex queue` 作为 correctness dependency，而是直接使用 Code
 
 spawn 前 scanner 只寻找这些结构和本 Delivery marker，不保存一般对话文本：其它 active turn -> retry；同 marker active turn -> retry 且绝不重注入；同 marker + matching task_complete -> **不启动 Codex，直接补 durable delivered ack**；重复 marker、无 turn marker 或不一致历史 -> needs_rebind。只有 rollout 已 idle 且静默至少 3 秒才允许新 `exec resume`。因此“原 Codex CLI 正在 active turn”与“Codex 已完成但 daemon 在 SQLite ack 前崩溃”两条关键竞态都被持久层封住。`codex queue` 仍可作为未来 resident app-server latency 优化，但 queue exit 0 本身永远不能等价于 Delivery success。所有自动路径沿用用户现有 Codex trust/sandbox/config，禁止自动加入 dangerous approval/trust bypass flags。
 
-R9d 已完成真实 provider 终验：Codex 0.150.1 exact thread `01a05b2b-4cba-7632-9be0-3f3cc18ca3ab` 通过实际 MCP `_meta.threadId` 提交 gm00 Slurm Job 31739 后完全退出；runwatchd 在 Run terminal 后自动 `exec resume` 同一 thread，SQLite Delivery=`delivered`/AgentInvocation=`completed`，rollout 中 deterministic marker 恰好一次且所在 turn 有 matching `task_complete`。整个恢复过程没有人工 `continue`。验收使用 disposable MCP registration + isolated runwatch state，并在结束后清理；production 下一步是把 Codex MCP registration/status/doctor 做成 runwatch 自身的 onboarding UX。
+R9d 已完成真实 provider 终验：Codex 0.150.1 exact thread `01a05b2b-4cba-7632-9be0-3f3cc18ca3ab` 通过实际 MCP `_meta.threadId` 提交 gm00 Slurm Job 31739 后完全退出；runwatchd 在 Run terminal 后自动 `exec resume` 同一 thread，SQLite Delivery=`delivered`/AgentInvocation=`completed`，rollout 中 deterministic marker 恰好一次且所在 turn 有 matching `task_complete`。整个恢复过程没有人工 `continue`。R10a/R10b 又完成了保守 onboarding 与只读 doctor。到这里第二适配器实验已经达到目的；当前 v1 周期冻结后续 Codex 产品化。
 
-### Codex production onboarding（R10）
+### Codex onboarding experiment（R10a/R10b 已完成，后续冻结）
 
 Codex adapter 的安装权威仍然是 **Codex 自己的 MCP 配置管理面**，不是 runwatch 直接改 `config.toml`。`runwatch agent codex install/status/remove` 通过 `codex mcp get/add/remove` 管理固定名称 `runwatch`，并把当前 `runwatch` 同目录的 `runwatch-mcp` 作为唯一 owned target。
 
@@ -338,7 +342,7 @@ Codex adapter 的安装权威仍然是 **Codex 自己的 MCP 配置管理面**�
 
 Windows 对外部 consumer 写入路径前统一去除 Win32 verbatim prefix：`\\?\C:\... -> C:\...`、`\\?\UNC\server\share\... -> \\server\share\...`。这是 R10a 隔离 Codex 0.150.1 实机 round-trip 抓到的真实问题，沿用 R8 Task Scheduler 已验证的 consumer-safe path 原则。Codex 管理子进程使用 native `codex.exe`/显式 `RUNWATCH_CODEX_EXECUTABLE` 且 `CREATE_NO_WINDOW`，不依赖 PowerShell shim。
 
-R10b 的 `runwatch agent codex doctor` 是纯只读 readiness 聚合，不是安装入口。它同时验证 native launcher、sibling `runwatch-mcp`、sessions root 形态、owned+enabled MCP registration 与 daemon hello 中的 `offline_codex_continuation` capability，并把 `daemon unreachable` 与 `daemon incompatible` 分开报告。首次使用尚未生成 sessions 目录不会被误判为不支持；真正需要无人值守恢复时，ephemeral/缺失 rollout 仍由 R9 continuation preflight fail closed。R10c 再把 R9d 的真实 provider gate 固化成显式 opt-in、全隔离、可清理的 release acceptance，而不是让 doctor 隐式产生 provider 调用或配置写入。
+R10b 的 `runwatch agent codex doctor` 是纯只读 readiness 聚合，不是安装入口。它同时验证 native launcher、sibling `runwatch-mcp`、sessions root 形态、owned+enabled MCP registration 与 daemon hello 中的 `offline_codex_continuation` capability，并把 `daemon unreachable` 与 `daemon incompatible` 分开报告。首次使用尚未生成 sessions 目录不会被误判为不支持；真正需要无人值守恢复时，ephemeral/缺失 rollout 仍由 R9 continuation preflight fail closed。**R10c 及进一步 Codex release work 现已延后到 Pi-first v1 之后。** 届时先设计/提炼 agent-neutral adapter contract，再决定如何把这些 Codex-specific 机制迁入独立 Agent Integration 项目；当前不新建该项目。
 
 
 ## 安全边界
@@ -362,6 +366,7 @@ R10b 的 `runwatch agent codex doctor` 是纯只读 readiness 聚合，不是安
 5. Pi offline continuation；
 6. branch/rebind safety；
 7. fault matrix；
-8. 其它 coding agent adapters。
+8. **Pi-first v1 release closure：distribution / install-readiness / repeatable real-Pi acceptance / multi-hour soak / compatibility retirement**；
+9. v1 完成后才重新评估 agent-neutral adapter extraction 与其它 coding agent integration projects。
 
-在 R1 完成前，旧 JSONL、直接 CLI writer、shell callback、GUI heartbeat takeover 都视为兼容实现，不再扩展其能力。
+R1–R8 的 durable core 已基本收口；当前不要为了未来 agent 扩张 runwatch 的 agent-specific surface。旧 JSONL、历史 callback 和其它迁移兼容只允许为 v1 迁移/回滚保留，不再扩展能力。

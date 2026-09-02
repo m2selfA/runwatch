@@ -1,6 +1,6 @@
 # runwatch Development Checkpoint
 
-Last updated: 2026-09-01
+Last updated: 2026-09-02
 
 This file is the authoritative implementation checkpoint for the current redesign. **Every completed development phase must update this document before the next phase begins.**
 
@@ -31,7 +31,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 5. **Durable delivery outbox:** terminal execution and agent continuation are separate durable phases; callback failure is retryable.
 6. **Transport × Runner:** `Local × Process`, `SSH(alias) × Slurm`, `SSH(alias) × LSF`.
 7. **Narrow SSH authority:** runwatch uses SSH only for lifecycle operations; arbitrary remote workspace access stays in `pi-ssh-tools`.
-8. **Pi first:** Pi live/offline continuation is the first complete AgentAdapter; other coding agents come later.
+8. **Pi-first v1 freeze:** Pi live/offline continuation is the only Agent Integration path that may block the first production release. The validated Codex work remains a reference implementation only; no further non-Pi AgentAdapter productization starts until `runwatch` + `pi-runs` v1 is closed.
 9. **Branch-safe continuation:** Pi binding eventually includes `session_file + session_id + origin_leaf_id`; divergence requires explicit rebind.
 10. **No hidden trust bypass:** unattended agent resume must not silently approve an untrusted project.
 
@@ -48,8 +48,9 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R6 | Branch lineage / rebind safety | **real same-session `/tree` block + explicit rebind recovery passed 2026-08-31** |
 | R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
 | R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
-| R9 | Additional coding-agent adapters, starting with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed** |
-| R10 | Production adapter onboarding + repeatable release acceptance | **in progress 2026-09-01 — R10a onboarding + R10b read-only doctor completed; R10c repeatable real-provider acceptance next** |
+| R9 | Second-adapter architecture experiment with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed; retained as reference evidence** |
+| R10 | Codex onboarding experiment | **frozen after R10b on 2026-09-02 — status/install/remove/doctor remain validated reference code; R10c and further Codex productization are deferred until after runwatch + pi-runs v1** |
+| R11 | Pi-first v1 production closure | **in progress 2026-09-02 — release/distribution, repeatable Pi acceptance, soak/fault endurance, compatibility retirement and release-candidate closure** |
 
 ## R0 completion record
 
@@ -505,9 +506,9 @@ Architecture and acceptance:
 - [x] Persistent rollout evidence independently confirmed exact-thread and exactly-once semantics: `session_meta.id == session_meta.session_id == 01a05b2b-...`, the deterministic continuation marker occurred **exactly once**, marker turn `01a05b2c-312e-7dc0-91f3-46c7478878b4` had a matching `task_complete`, and no active turn remained after the scan.
 - [x] Acceptance cleanup removed the temporary `runwatch_r9d` global MCP entry, stopped the isolated daemon, and deleted isolated SQLite/temp logs. The real Codex rollout remains persisted as durable thread evidence. No human typed “continue”.
 
-### R10 — production adapter onboarding + repeatable release acceptance — in progress 2026-09-01
+### R10 — Codex reference-adapter productization experiment — frozen after R10b on 2026-09-02
 
-R9 proves the Codex adapter semantics. R10 productizes them so a user does not have to reproduce the acceptance harness by hand.
+R9 proved that the durable continuation model can support a second, structurally different coding agent. R10a/R10b then proved conservative Codex onboarding and readiness diagnostics. That experiment has served its architectural purpose. **No additional Codex productization is part of the current v1 release path.** Existing Codex code remains regression-covered reference evidence while `runwatch` + `pi-runs` are completed first.
 
 #### R10a — Codex MCP onboarding — completed 2026-09-01
 
@@ -532,11 +533,11 @@ R9 proves the Codex adapter semantics. R10 productizes them so a user does not h
 - [x] Real isolated three-state acceptance on Codex 0.150.1 used an E:-only temporary `CODEX_HOME`, E:-only runwatch data dir and a unique named pipe: missing MCP + daemon offline -> nonzero with both reasons; installed MCP + daemon offline -> nonzero with only daemon reason; installed MCP + current isolated daemon -> **exit 0 / `ready=true`**. A second doctor call remained ready without mutations; fixture install/remove succeeded and the guarded E: temporary directory was deleted.
 - [x] R10b closeout regression: `cargo fmt -- --check` passed; `cargo check --all-targets` passed with only the existing `russh v0.54.5` future-incompatibility warning; `cargo test --all-targets` — **98 passed, 0 failed, 8 ignored by default**. All prior Pi/Codex continuation, scheduler, SSH, service and MCP gates remain green.
 
-#### R10c — repeatable real-provider release acceptance — next
+#### R10c — repeatable Codex real-provider release acceptance — deferred post-v1
 
-- [ ] Encode the R9d provider gate as an explicit opt-in release acceptance with isolated runwatch state, disposable MCP registration, exact-thread/Delivery/rollout assertions, and guaranteed cleanup. The acceptance must fail closed before touching the normal runwatch ledger or permanent Codex MCP configuration.
-- [ ] Preserve the current correctness evidence hierarchy: Run/Delivery/AgentInvocation in SQLite plus exact Codex thread identity and persisted rollout marker + matching `task_complete`. Process exit alone remains insufficient.
-- [ ] Keep Pi as the reference native adapter and Codex as the reference MCP-bound adapter; extract only protocol concepts that are actually common before adding further coding-agent CLIs.
+- [ ] Do **not** advance this gate during the current release cycle. The tracked R9d/R10 harness and real-provider evidence remain useful regression/reference assets, but Codex is not a v1 release blocker.
+- [ ] After `runwatch` + `pi-runs` v1 is complete, revisit agent-neutral extraction before adding new Codex features. The intended product boundary is a future independent Agent Integration project (working name `codex-runs`) analogous to `pi-runs`; **no such repository is created in the current phase**.
+- [ ] Long-term, `runwatchd` should own only agent-neutral Delivery/AgentInvocation contracts. Codex-specific `_meta.threadId`, rollout parsing, `codex exec resume`, MCP registration and doctor behavior belong in that future integration plane. The embedded implementation is transitional reference code, not architecture to extend.
 
 Safety invariants:
 
@@ -544,6 +545,36 @@ Safety invariants:
 - A missing/ephemeral rollout, thread-id mismatch, unavailable project cwd, or ambiguous resume is fail-closed and becomes retry/needs-attention, never a silently-created replacement thread.
 - Codex is an AgentAdapter only. Run state, scheduler ownership, observation and Delivery retry remain exclusively in `runwatchd`.
 - A subprocess exit code is never sufficient Codex continuation evidence; exact thread identity and completed-turn evidence are mandatory.
+
+## R11 — Pi-first v1 production closure — in progress 2026-09-02
+
+The current development priority is to finish the already-proven Pi product path before any further AgentAdapter expansion.
+
+### R11a — release/distribution foundation — next
+
+- [ ] Define a portable release layout for `runwatch`, `runwatch-mcp` and `runwatch-gui` with deterministic manifest/hash verification.
+- [ ] Keep formal release tooling Rust-native (for example an `xtask`/workspace utility) rather than making Python a runtime prerequisite for packaging. Existing untracked Python packaging experiments are prototypes only and are not part of the release architecture.
+- [ ] Verify unpacked sibling-binary operation independently of the source tree and document installation/startup boundaries used by `pi-runs`.
+
+### R11b — Pi installation/readiness closure
+
+- [ ] Make the supported `pi-runs -> local IPC -> runwatchd` installation/readiness path explicit and diagnosable without introducing a second control plane.
+- [ ] Verify resident runwatchd startup, Pi extension loading, capability discovery and fail-closed behavior from the release layout.
+
+### R11c — repeatable real-Pi release acceptance
+
+- [ ] Turn the already-passed Pi real-provider + gm00 Slurm + exact-session continuation loop into a repeatable explicit release gate using isolated state and bounded cleanup.
+- [ ] Include the Windows Local × Process path as a second execution shape without duplicating continuation semantics.
+
+### R11d — endurance/fault hardening
+
+- [ ] Run multi-hour concurrent workloads covering daemon restart, transient SSH loss, scheduler completion, offline Pi relaunch, exactly-once settlement and branch-safe rebind.
+- [ ] Treat endurance failures as release blockers; do not hide them behind adapter-specific retry loops.
+
+### R11e — compatibility retirement + release candidate
+
+- [ ] Decide which legacy JSONL/callback compatibility fields still require migration support and remove/deprecate the rest without restoring a second writer.
+- [ ] Close install/upgrade/uninstall documentation, version compatibility diagnostics and a reproducible release-candidate checklist.
 
 ## Known transitional debt
 
@@ -553,29 +584,22 @@ Until later phases complete, these are explicitly compatibility paths, not archi
 - `RunRecord` still carries deprecated callback compatibility fields for historical JSON/DB deserialization, but no runtime shell callback execution remains.
 - MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
 - Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd requires pre-existing known-hosts trust.
-- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex now both have real provider continuation acceptance; remaining work is production onboarding, repeatable release automation, broader interoperability and long soak hardening.
+- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex both have real continuation evidence, but only the Pi path is in the current v1 release scope; remaining work is Pi-focused distribution/readiness, repeatable release acceptance, compatibility retirement and long-soak hardening.
 
-## Release gate for the overall project
+## Release gate for the current v1 project
 
-The core continuation runtime is considered functionally complete only when both reference adapter loops pass without human intervention:
+The first production release is intentionally **Pi-first**. The blocking product loop is:
 
 ```text
 Pi on Windows
-  -> prepare remote workspace
-  -> runs_submit to remote Slurm/LSF
+  -> prepare/inspect remote workspace with pi-ssh-tools
+  -> runs_submit through pi-runs to runwatchd
   -> Pi exits completely
-  -> computation runs independently
+  -> remote Slurm/LSF or local Process computation runs independently
   -> runwatch survives reconnect/restart conditions
-  -> terminal delivery restores the exact Pi session/branch
+  -> terminal Delivery restores the exact Pi session/branch
+  -> Pi explicitly re-activates the recorded workspace
   -> Pi inspects results and continues scientific reasoning
-
-Codex CLI on Windows
-  -> submit_science_run through MCP _meta.threadId
-  -> initiating Codex process exits completely
-  -> computation runs independently
-  -> runwatch resumes exact persisted Codex thread
-  -> one deterministic Delivery marker reaches matching task_complete
-  -> canonical Delivery is delivered exactly once
 ```
 
-Both loops have now passed real provider acceptance. Release hardening still includes multi-hour soak, repeatable installation/diagnostics and broader client interoperability. No human should need to type “continue”.
+This functional loop already has real provider/HPC/crash evidence. V1 closes only after the same semantics are repeatable from the supported release/install layout and survive the R11 endurance matrix. The existing Codex loop remains valuable second-adapter evidence but is **not** a v1 release gate. No human should need to type “continue”.
