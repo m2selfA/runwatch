@@ -65,6 +65,7 @@ Already passed:
 - focused completion-before-settlement daemon crash recovery with no duplicate completion;
 - focused real gm00 SSH transport interruption/recovery: Job 31753 remained running while Observation changed `fresh -> unreachable -> fresh`, then completed with exactly-once continuation settlement;
 - current-package repeat qualification: 456.473 s, 2 rounds / 4 real cases, concurrent Local + Slurm, two serve restarts, two same-session rebind recoveries, Slurm Jobs 31755/31756 and exactly-once final remote continuation. It is intentionally not counted as the multi-hour gate.
+- focused Slurm-only packaged rebind on Job 31757 with explicit pi-runs + pi-ssh-tools extension loading: zero wrong-branch completion/settlement, exactly one rebind, Delivery attempt 2 final success and exact remote result inspection.
 
 Still blocking a v1 tag:
 
