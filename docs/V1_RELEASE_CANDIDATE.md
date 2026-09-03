@@ -80,9 +80,10 @@ Additional formal evidence:
 
 - authority #3 `soak-20260903003939-cf822303` is preserved as failed/non-resumable. Round 1 passed Local + gm00 Slurm Job **31770** across serve **91264 -> 94108**. In round 2 the Local runwatch/rebind/session path still reached one terminal completion, successful `runs_status/runs_logs/read`, and an exact marker-file token; the real Pi provider then omitted `cf822303` only while copying that verified token into its terminal free-text `R8B_RELEASE_OK` acknowledgement. The current pi-runs verifier treats the byte-exact assistant echo as a hard gate and therefore failed segment 1 after **1347.466 s**. No failed-segment time is credited and no runwatch DB/session evidence is modified to compensate.
 
+- pi-runs **`bcc9eaf`** now hardens that boundary without weakening deterministic runwatch invariants: exact token verification from the tool result, verification-tool allowlist/count/order, and exactly-once Delivery/Invocation/completion/settlement remain mandatory; one terminal `stop` acknowledgement must still bind to the completed Run, while its redundant copied token is recorded rather than treated as a second token authority. Focused release tests are **6/6**; default pi-runs regression is **53 passed / 0 failed / 1 skipped** with the real Pi loader passing. A read-only replay of authority #3's real failed JSONL verifies its durable state and explicitly reports the imperfect copied acknowledgement without rewriting evidence.
+
 Still blocking a v1 tag:
 
-- pi-runs must harden that acceptance boundary without weakening deterministic runwatch invariants: exact token verification from the tool result, verification-tool sequence, and exactly-once Delivery/Invocation/completion/settlement remain mandatory; a single Run-bound terminal acknowledgement remains mandatory, but redundant byte-perfect LLM copying of an already verified token should not define durability.
-- then run a new frozen formal endurance authority until `v1_endurance.qualified=true`. All failed authorities remain preserved/non-resumable.
+- run a new frozen formal endurance authority from pi-runs `bcc9eaf` until `v1_endurance.qualified=true`. All failed authorities remain preserved/non-resumable.
 
 No human `continue` message is permitted in the formal continuation gates.
