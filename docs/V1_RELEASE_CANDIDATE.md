@@ -89,6 +89,7 @@ Additional cleanup qualification:
 
 Still blocking a v1 tag:
 
-- start the final frozen formal endurance authority from the cleanup-fixed pi-runs tree and run/resume that authority until `v1_endurance.qualified=true`. Earlier evidence remains preserved but does not count toward the final authority.
+- final pi-runs authority #5 `soak-20260903022319-d0074e45` is active from cleanup-fixed `596d2f6`. Round 1 passed Local `local:90324:01dd3b4b3acaedbe` + gm00 Slurm Job **31781** across serve **93556 -> 55368**, with exactly-once Delivery/Invocation/completion/settlement and exact result inspection.
+- continue/resume only authority #5 until `v1_endurance.qualified=true`; earlier authorities remain preserved and do not count toward this final authority.
 
 No human `continue` message is permitted in the formal continuation gates.
