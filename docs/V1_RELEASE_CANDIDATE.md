@@ -105,4 +105,6 @@ Still blocking a v1 tag:
 
 - authority #7 round 2 passed Local `local:97124:01dd3b640a740ee4` + Job **31795** through the first real rebind + SSH-loss/recovery pair and serve **100336 -> 90924**, then advanced to round 3. The active authority now has SSH=1/rebind=1; round 3 is exercising the first settlement-crash recovery.
 
+- authority #7 segment 1 is clean at **2176.025 s / 3 rounds / 6 cases**. Round 3 passed the first completion-before-settlement recovery: Local `local:96360:01dd3b65ae9c7d89`, Job **31796**, scheduled serve **90924 -> 96384**, crash-window serve **96384 -> 95748**, attempts/invocations=2 with one final completion/settlement. Current coverage is restart=3, SSH=1, rebind=1, settlement-crash=1, dirty=0. Resume only this authority.
+
 No human `continue` message is permitted in the formal continuation gates.
