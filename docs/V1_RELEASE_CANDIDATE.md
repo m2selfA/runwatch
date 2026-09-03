@@ -1,6 +1,6 @@
 # runwatch v1 Release Candidate Contract
 
-Status: **contract frozen; not yet taggable**. The Pi-first v1 candidate remains blocked on the R11d endurance matrix and final resident upgrade/uninstall lifecycle closeout.
+Status: **contract frozen; v1 release candidate qualified on 2026-09-03; ready for coordinated `v0.1.0` tag/release-note preparation**.
 
 ## Product scope
 
@@ -48,13 +48,13 @@ The release ZIP must:
 - be byte-deterministic when generated twice from the same release binaries;
 - run from the extracted package without relying on `target/` or the source tree.
 
-The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b79377caad717ab32aadc1d3599c6b50b860e9ba8c7461309295d8ac7198`. The current HEAD `4888d39` candidate was rebuilt after the SSH-config/fault-hardening work and independently verified at **9,686,896 bytes**, SHA-256 `7bcfe151b56400de2695ff6e8f56f13743691e77c48cda282098b95295edd8f1`.
+The first qualified Windows artifact was 9,683,276 bytes with SHA-256 `33d4b79377caad717ab32aadc1d3599c6b50b860e9ba8c7461309295d8ac7198`. The final fixed v1 package is built from runtime source `f6b75b8`: `runwatch-v0.1.0-windows-x86_64.zip`, **9,686,763 bytes**, archive SHA-256 `3b67fae3055bed5765ae587fd9b27d228ea84fb47f1a0c4c377a0317591e426f`; its extracted `runwatch.exe` SHA-256 is `3d1be0ac320947adbd29e5335a7894930e9ba8eb05366ae307ba39ccc0ac16a1`. Final `xtask verify` reports `ok=true`, platform `windows-x86_64`, version `0.1.0`, files=5.
 
 ## Required release evidence
 
 Already passed:
 
-- Rust fmt/check/unit matrix: 105 passed / 0 failed / 8 ignored after compatibility, resident-stop and explicit-SSH-config coverage;
+- final Rust fmt/check/unit matrix: **106 passed / 0 failed / 8 ignored**; `cargo fmt -- --check` and `cargo check --all-targets` also pass, with only the known `russh 0.54.5` future-incompat warning;
 - packaged supervisor readiness and serve-child restart;
 - real Pi/provider Windows Local Process release gate;
 - real Pi/provider gm00 Slurm release gate on `/share/home/shark/tmp`;
@@ -87,7 +87,7 @@ Additional cleanup qualification:
 - clean pi-runs authority #4 `soak-20260903011346-0e69c771` passed **2229.353 s / 3 rounds / 6 cases** with mixed Local+Slurm, restart=3, SSH recovery=1, rebind=1 and settlement-crash recovery=1, all with final exactly-once continuation. It remains preserved and is not resumed because the acceptance tree changes next.
 - pi-runs then fixed its acceptance-only concurrent-inspector cleanup: all case inspectors still start concurrently, but all settle before a rejection propagates, preventing the failure-path timer/poll leak seen after authority #3. Focused soak tests pass **17/17**; default pi-runs regression is **55 passed / 0 failed / 1 skipped** with the real Pi loader passing.
 
-Still blocking a v1 tag:
+Superseded formal-authority history (preserved, no longer blocking):
 
 - final pi-runs authority #5 `soak-20260903022319-d0074e45` is active from cleanup-fixed `596d2f6`. Round 1 passed Local `local:90324:01dd3b4b3acaedbe` + gm00 Slurm Job **31781** across serve **93556 -> 55368**, with exactly-once Delivery/Invocation/completion/settlement and exact result inspection.
 - authority #5 round 2 passed the scheduled real rebind + SSH recovery: Local had zero wrong-branch completion/settlement, one `runs_rebind`, attempt 2 final settlement; Job **31782** remained the same running JobID through `fresh -> unreachable(transport) -> fresh(scheduler)`. Serve recovered **55368 -> 49176**.
@@ -130,5 +130,21 @@ Still blocking a v1 tag:
 - authority #11 segment 1 closed cleanly at **2775.753 s / 4 rounds / 8 cases / 0 failed segments**. Coverage reached restart=4, SSH recovery=2, rebind recovery=2 and settlement-crash recovery=1; repeated restart/SSH/rebind gates and mixed execution shapes were already satisfied.
 - authority #11 segment 2 closed cleanly at **2800.818 s / rounds 5–8 / 8 cases**, cumulative **5576.571 s / 8 rounds / 16 cases / 0 failed segments**. Coverage reached restart=8, SSH recovery=4, rebind recovery=4 and settlement-crash recovery=2; every non-duration requirement was true.
 - authority #11 segment 3 closed cleanly at **2223.649 s / rounds 9–11 / 6 cases**. Final authority is **7800.220 s / 11 rounds / 22 real cases / 3 clean segments / 0 failed segments**, with Local=11, Slurm=11, restart=11, SSH recovery=5, rebind recovery=5 and settlement-crash recovery=3. Machine `v1_endurance.qualified=true`; all requirements are true and `reasons=[]`. Preserve `soak-20260903114134-5b2db744` as the current-binary formal endurance authority.
+
+## Final RC replay — qualified 2026-09-03
+
+- runwatch fixed runtime identity remains `f6b75b8`; `git diff --name-only f6b75b8..HEAD` contains only the two release docs, so current HEAD has no runtime-code drift from the packaged binaries.
+- pi-runs final regression is **57 passed / 0 failed / 1 skipped**; explicit Pi extension loading exits 0 and explicit real-Pi live bridge passes **1/1**. Its authority #11 runtime/acceptance identity likewise has only release-doc drift above `7bfb40b`.
+- fixed-package Local release evidence `local-process-20260903143640-87bf00a7` succeeded with one packaged `runs_doctor`, one submit, Delivery attempt=1, one completed AgentInvocation, completion=1, settlement=1 and exact `runs_status/runs_logs/read` verification.
+- fixed-package gm00 Slurm evidence `slurm-20260903143800-2e98a872` / Job **31830** succeeded on `/share/home/shark/tmp` with one packaged `runs_doctor`, one submit, Delivery attempt=1, one completed AgentInvocation, completion=1, settlement=1 and exact `runs_status/runs_logs/ssh_activate/ssh_read` verification.
+- final `xtask verify` returns `ok=true` for ZIP SHA-256 `3b67fae3055bed5765ae587fd9b27d228ea84fb47f1a0c4c377a0317591e426f`; pi-runs `npm pack --dry-run --json` confirms **23 files / 185,363 bytes unpacked** and no legacy runtime surface.
+- the final read-only report of `soak-20260903114134-5b2db744` still returns `v1_endurance.qualified=true`, **7800.220 s**, 11 rounds, 22 cases and `dirty_segments=[]` after every replay gate.
+
+## `v0.1.0` tag / release-note plan
+
+1. Keep both repositories code-frozen; only release-document corrections are allowed before tagging. Do not add Codex integration, AgentAdapters, legacy backend paths, schedulers or GUI features.
+2. After one final clean-worktree review, create coordinated `v0.1.0` tags in runwatch and pi-runs. The runwatch tag may sit on docs-only commits above `f6b75b8` because runtime source identity is unchanged; the same applies to pi-runs above `7bfb40b`.
+3. Release notes should lead with the Pi-first architecture (`runwatch` durable authority, `pi-runs` integration, `pi-ssh-tools` online SSH plane), Windows Local Process + Slurm/LSF execution, durable exact-session continuation/rebind and exactly-once Delivery/settlement semantics.
+4. Release evidence should cite the fixed ZIP hash, final Local + Job 31830 gates, authority #11's 7800.220-second qualified matrix, final Rust/pi-runs tests and package verification. Known non-blocking debt is the existing russh future-incompat warning plus post-v1 agent integrations.
 
 No human `continue` message is permitted in the formal continuation gates.
