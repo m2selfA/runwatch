@@ -103,4 +103,6 @@ Still blocking a v1 tag:
 
 - formal pi-runs authority #7 `soak-20260903050918-ff7f558d` is active from `ab13e7d`, contract-tree SHA-256 `3d1f46dfe8c68a891ee48852b51f42ebf594f6cb70e2f864a52c46aa45113227`. Round 1 passed Local `local:54464:01dd3b626abc6639` + Job **31794** through the full 600-second workload and serve **95776 -> 100336**, then completed exactly-once result inspection/settlement and advanced to round 2. Continue only this authority.
 
+- authority #7 round 2 passed Local `local:97124:01dd3b640a740ee4` + Job **31795** through the first real rebind + SSH-loss/recovery pair and serve **100336 -> 90924**, then advanced to round 3. The active authority now has SSH=1/rebind=1; round 3 is exercising the first settlement-crash recovery.
+
 No human `continue` message is permitted in the formal continuation gates.
