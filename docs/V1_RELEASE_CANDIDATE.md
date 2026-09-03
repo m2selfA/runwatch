@@ -107,6 +107,7 @@ Still blocking a v1 tag:
 
 - authority #7 segment 1 is clean at **2176.025 s / 3 rounds / 6 cases**. Round 3 passed the first completion-before-settlement recovery: Local `local:96360:01dd3b65ae9c7d89`, Job **31796**, scheduled serve **90924 -> 96384**, crash-window serve **96384 -> 95748**, attempts/invocations=2 with one final completion/settlement. Current coverage is restart=3, SSH=1, rebind=1, settlement-crash=1, dirty=0. Resume only this authority.
 - authority #7 segment 2 is also clean: **2277.415 s**, cumulative **4453.440 s / 6 rounds / 12 cases**, no dirty segments. Job **31797** supplied the second SSH+rebind pair, Job **31798** the normal round, and round 6 combined Local rebind with Job **31799** completion-before-settlement recovery. Coverage is restart=6, SSH=3, rebind=3, settlement-crash=2; all repeated-fault requirements are now true and exactly-once invariants remain intact.
+- round 7 passed Local `local:102224:01dd3b718cd7b3da` + Job **31800** across serve **101076 -> 100428**. A Slurm seed 503 and two later provider stall-watchdog retries were absorbed inside the same Pi lifecycle; exact remote token inspection completed and both final Deliveries/Invocations remained exactly once before round 8 started.
 - continue only authority #7 until clean active time reaches the frozen 7200-second target; `active_time_meets_target` is the only remaining endurance gate.
 
 No human `continue` message is permitted in the formal continuation gates.
