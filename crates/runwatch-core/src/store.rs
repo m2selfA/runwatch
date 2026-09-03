@@ -512,12 +512,7 @@ impl RunStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_active_session_lease(&tx, agent_kind, session_id, owner_instance_id, now)?;
 
-        tx.execute(
-            "UPDATE deliveries SET state='pending', next_retry_at=NULL,
-                    last_error=COALESCE(last_error, 'live delivery claim expired')
-             WHERE state='delivering' AND next_retry_at IS NOT NULL AND next_retry_at<=?1",
-            [now.to_rfc3339()],
-        )?;
+        requeue_expired_delivery_claims(&tx, now)?;
 
         let candidates = {
             let mut stmt = tx.prepare(
@@ -610,6 +605,7 @@ impl RunStore {
             now - ChronoDuration::from_std(grace).unwrap_or_else(|_| ChronoDuration::seconds(20));
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        requeue_expired_delivery_claims(&tx, now)?;
 
         let candidates = {
             let mut stmt = tx.prepare(
@@ -1251,6 +1247,15 @@ impl RunStore {
     }
 }
 
+fn requeue_expired_delivery_claims(tx: &Transaction<'_>, now: DateTime<Utc>) -> Result<usize> {
+    Ok(tx.execute(
+        "UPDATE deliveries SET state='pending', next_retry_at=NULL,
+                last_error=COALESCE(last_error, 'delivery claim expired before durable acknowledgement')
+         WHERE state='delivering' AND next_retry_at IS NOT NULL AND next_retry_at<=?1",
+        [now.to_rfc3339()],
+    )?)
+}
+
 fn parse_utc(value: &str) -> Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(value)
         .with_context(|| format!("parse UTC timestamp {value}"))?
@@ -1694,6 +1699,99 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        cleanup(&db);
+    }
+
+    #[test]
+    fn expired_live_delivery_claim_is_recovered_by_offline_reservation() {
+        use crate::types::{ContinuationBinding, RemoteWorkspaceRef};
+
+        let (db, legacy) = test_paths("expired-live-claim-offline-recovery");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "cluster".into(),
+            cwd: "/shared/project".into(),
+        };
+        let binding = ContinuationBinding {
+            agent_kind: "pi".into(),
+            session_id: "s-fast-terminal".into(),
+            session_file: Some("C:/sessions/s-fast-terminal.jsonl".into()),
+            origin_leaf_id: Some("leaf-origin".into()),
+            project_root: "C:/science".into(),
+            workspace: workspace.clone(),
+            adapter_path: Some("C:/pi-runs/extensions/runs/index.ts".into()),
+        };
+        let payload = DeliveryPayload {
+            delivery_id: "r-fast-terminal:a1:terminal".into(),
+            run_id: "r-fast-terminal".into(),
+            attempt_no: 1,
+            status: RunStatus::Succeeded,
+            job_id: Some("31804".into()),
+            workspace,
+            binding: binding.clone(),
+            created_at: now - ChronoDuration::seconds(120),
+        };
+        let expired = (now - ChronoDuration::seconds(1)).to_rfc3339();
+        let conn = store.connect().unwrap();
+        conn.execute(
+            "INSERT INTO deliveries(delivery_id, run_id, state, attempts, next_retry_at, last_error, payload_json)
+             VALUES(?1, ?2, 'delivering', 1, ?3, NULL, ?4)",
+            params![
+                payload.delivery_id,
+                payload.run_id,
+                expired,
+                serde_json::to_string(&payload).unwrap()
+            ],
+        )
+        .unwrap();
+        let registration = AgentSessionRegistration {
+            agent_kind: "pi".into(),
+            session_id: binding.session_id.clone(),
+            owner_instance_id: "dead-live-pi".into(),
+            session_file: binding.session_file.clone(),
+            project_root: binding.project_root.clone(),
+            current_leaf_id: binding.origin_leaf_id.clone(),
+        };
+        conn.execute(
+            "INSERT INTO agent_session_leases(agent_kind, session_id, owner_instance_id, expires_at, payload_json)
+             VALUES('pi', ?1, ?2, ?3, ?4)",
+            params![
+                binding.session_id,
+                registration.owner_instance_id,
+                (now - ChronoDuration::seconds(30)).to_rfc3339(),
+                serde_json::to_string(&registration).unwrap()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let invocation = store
+            .reserve_offline_invocation(Duration::ZERO)
+            .unwrap()
+            .expect("expired live claim must become an offline invocation");
+        assert_eq!(invocation.delivery_id, payload.delivery_id);
+        assert!(invocation.owner_instance_id.starts_with("offline:pi:"));
+
+        let conn = store.connect().unwrap();
+        let (state, attempts): (String, u32) = conn
+            .query_row(
+                "SELECT state, attempts FROM deliveries WHERE delivery_id=?1",
+                [&payload.delivery_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "delivering");
+        assert_eq!(attempts, 2);
+        let invocation_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_invocations WHERE delivery_id=?1",
+                [&payload.delivery_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invocation_count, 1);
+        drop(conn);
         cleanup(&db);
     }
 
