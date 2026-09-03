@@ -90,6 +90,7 @@ Additional cleanup qualification:
 Still blocking a v1 tag:
 
 - final pi-runs authority #5 `soak-20260903022319-d0074e45` is active from cleanup-fixed `596d2f6`. Round 1 passed Local `local:90324:01dd3b4b3acaedbe` + gm00 Slurm Job **31781** across serve **93556 -> 55368**, with exactly-once Delivery/Invocation/completion/settlement and exact result inspection.
+- authority #5 round 2 passed the scheduled real rebind + SSH recovery: Local had zero wrong-branch completion/settlement, one `runs_rebind`, attempt 2 final settlement; Job **31782** remained the same running JobID through `fresh -> unreachable(transport) -> fresh(scheduler)`. Serve recovered **55368 -> 49176**.
 - continue/resume only authority #5 until `v1_endurance.qualified=true`; earlier authorities remain preserved and do not count toward this final authority.
 
 No human `continue` message is permitted in the formal continuation gates.
