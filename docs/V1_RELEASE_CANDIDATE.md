@@ -76,8 +76,13 @@ Already passed:
 - formal session #2 is preserved as non-resumable after segment 5 exposed an acceptance-verifier false negative. Round 5 passed Local + Job **31765** exactly once across serve restart **41236 -> 89504**. In round 6, Job **31766** reached completion=1/settlement=0 and recovered to final completion=1/settlement=1 on Delivery attempt 2; the Local sibling branch received zero completion/settlement before explicit rebind and then settled exactly once. Because the same global crash also retried the Local Delivery, the correct final attempt count was 3; the old verifier incorrectly required rebind attempt 2 and failed segment 5 after **1552.697 s**. The evidence remains `dirty_segments=[failed:5]` and contributes no additional formal time.
 - pi-runs **`d279a58`** corrects combined-fault retry accounting: each case must account for its own rebind/settlement-crash retries and may receive at most one extra retry/Invocation from another case's injected global serve crash. The focused regression covers the observed combined shape; default pi-runs tests are **53 passed / 0 failed / 1 skipped**.
 
+Additional formal evidence:
+
+- authority #3 `soak-20260903003939-cf822303` is preserved as failed/non-resumable. Round 1 passed Local + gm00 Slurm Job **31770** across serve **91264 -> 94108**. In round 2 the Local runwatch/rebind/session path still reached one terminal completion, successful `runs_status/runs_logs/read`, and an exact marker-file token; the real Pi provider then omitted `cf822303` only while copying that verified token into its terminal free-text `R8B_RELEASE_OK` acknowledgement. The current pi-runs verifier treats the byte-exact assistant echo as a hard gate and therefore failed segment 1 after **1347.466 s**. No failed-segment time is credited and no runwatch DB/session evidence is modified to compensate.
+
 Still blocking a v1 tag:
 
-- run a **new frozen formal endurance authority** under the corrected `d279a58` verifier until its read-only report returns `v1_endurance.qualified=true`. The failed `b21f6ed7` authority and the segment-5-failed `4ddcb294` authority remain preserved and non-resumable by design.
+- pi-runs must harden that acceptance boundary without weakening deterministic runwatch invariants: exact token verification from the tool result, verification-tool sequence, and exactly-once Delivery/Invocation/completion/settlement remain mandatory; a single Run-bound terminal acknowledgement remains mandatory, but redundant byte-perfect LLM copying of an already verified token should not define durability.
+- then run a new frozen formal endurance authority until `v1_endurance.qualified=true`. All failed authorities remain preserved/non-resumable.
 
 No human `continue` message is permitted in the formal continuation gates.
