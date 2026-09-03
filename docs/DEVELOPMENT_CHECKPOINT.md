@@ -1,6 +1,6 @@
 # runwatch Development Checkpoint
 
-Last updated: 2026-09-03
+Last updated: 2026-09-04
 
 This file is the authoritative implementation checkpoint for the current redesign. **Every completed development phase must update this document before the next phase begins.**
 
@@ -46,11 +46,11 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R4 | Pi live continuation | **real Pi live terminal-delivery acceptance passed 2026-08-31** |
 | R5 | Pi offline continuation via exact-session headless worker | **real exact-session + combined gm00 Slurm/provider-success acceptance passed 2026-08-31** |
 | R6 | Branch lineage / rebind safety | **real same-session `/tree` block + explicit rebind recovery passed 2026-08-31** |
-| R7 | Fault-injection and unattended release matrix | **core crash/restart matrix completed 2026-08-31; multi-hour soak remains release hardening** |
-| R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; multi-hour soak remains release hardening** |
+| R7 | Fault-injection and unattended release matrix | **completed — core crash/restart matrix 2026-08-31; formal multi-hour mixed Local+Slurm endurance closed by authority #11 on 2026-09-03** |
+| R8 | GUI/service/MCP client hardening | **completed 2026-08-31 — GUI/service split, MCP 2026-07-28, supervisor-based Windows resident lifecycle and real fault acceptance; later multi-hour release hardening closed in R11d** |
 | R9 | Second-adapter architecture experiment with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed; retained as reference evidence** |
 | R10 | Codex onboarding experiment | **frozen after R10b on 2026-09-02 — status/install/remove/doctor remain validated reference code; R10c and further Codex productization are deferred until after runwatch + pi-runs v1** |
-| R11 | Pi-first v1 production closure | **in progress 2026-09-02 — release/distribution, repeatable Pi acceptance, soak/fault endurance, compatibility retirement and release-candidate closure** |
+| R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
 
 ## R0 completion record
 
@@ -546,9 +546,9 @@ Safety invariants:
 - Codex is an AgentAdapter only. Run state, scheduler ownership, observation and Delivery retry remain exclusively in `runwatchd`.
 - A subprocess exit code is never sufficient Codex continuation evidence; exact thread identity and completed-turn evidence are mandatory.
 
-## R11 — Pi-first v1 production closure — in progress 2026-09-02
+## R11 — Pi-first v1 production closure — completed 2026-09-03
 
-The current development priority is to finish the already-proven Pi product path before any further AgentAdapter expansion.
+The Pi-first product path is release-qualified. The code remains frozen through coordinated v0.1.0 tagging; further AgentAdapter expansion stays post-v1.
 
 ### R11a — release/distribution foundation — completed 2026-09-02
 
@@ -673,11 +673,11 @@ Until later phases complete, these are explicitly compatibility paths, not archi
 - legacy `runs.jsonl` may remain as one-time migration/export compatibility input, but is no longer canonical storage.
 - MCP is now on `rmcp 3.1.4`; remaining MCP debt is release interoperability breadth (more third-party clients), not a handwritten protocol implementation.
 - Host values use `ssh -G`; recursive `Include` alias discovery, effective Global/UserKnownHostsFile + HostKeyAlias, raw/user/port/IPv6 ProxyJump parsing, `IdentitiesOnly`-filtered OpenSSH-agent/Pageant fallback and encrypted-key non-interactive policy are implemented. `RUNWATCH_SSH_CONFIG` optionally selects one explicit OpenSSH config for both alias discovery and `ssh -G` without changing HOME; this enabled isolated transport-fault qualification while preserving Pi/provider configuration. Trust-relaxing OpenSSH options are intentionally not mirrored: runwatchd still requires pre-existing known-hosts trust.
-- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex both have real continuation evidence, but only the Pi path is in the current v1 release scope; remaining work is Pi-focused distribution/readiness, repeatable release acceptance, compatibility retirement and long-soak hardening.
+- scheduler observation has first-class Observation rows, adaptive polling, Slurm v2 batching and LSF active/recent batching with `bhist` fallback. R2 execution/observation/SSH parity is closed. Pi and Codex both have real continuation evidence, but only the Pi path is in the current v1 release scope; Pi-first distribution/readiness, repeatable release acceptance, compatibility retirement and long-soak hardening are now closed for v0.1.0.
 
 ## Release gate for the current v1 project
 
-The first production release is intentionally **Pi-first**. The blocking product loop is:
+The first production release is intentionally **Pi-first**. The validated product loop is:
 
 ```text
 Pi on Windows
@@ -691,4 +691,4 @@ Pi on Windows
   -> Pi inspects results and continues scientific reasoning
 ```
 
-This functional loop already has real provider/HPC/crash evidence. V1 closes only after the same semantics are repeatable from the supported release/install layout and survive the R11 endurance matrix. The existing Codex loop remains valuable second-adapter evidence but is **not** a v1 release gate. No human should need to type “continue”.
+This functional loop is now release-qualified from the supported release/install layout and has survived the R11 endurance matrix plus final RC replay. The existing Codex loop remains valuable second-adapter evidence but is **not** part of the v0.1.0 release scope. No human should need to type “continue”.
