@@ -82,8 +82,13 @@ Additional formal evidence:
 
 - pi-runs **`bcc9eaf`** now hardens that boundary without weakening deterministic runwatch invariants: exact token verification from the tool result, verification-tool allowlist/count/order, and exactly-once Delivery/Invocation/completion/settlement remain mandatory; one terminal `stop` acknowledgement must still bind to the completed Run, while its redundant copied token is recorded rather than treated as a second token authority. Focused release tests are **6/6**; default pi-runs regression is **53 passed / 0 failed / 1 skipped** with the real Pi loader passing. A read-only replay of authority #3's real failed JSONL verifies its durable state and explicitly reports the imperfect copied acknowledgement without rewriting evidence.
 
+Additional cleanup qualification:
+
+- clean pi-runs authority #4 `soak-20260903011346-0e69c771` passed **2229.353 s / 3 rounds / 6 cases** with mixed Local+Slurm, restart=3, SSH recovery=1, rebind=1 and settlement-crash recovery=1, all with final exactly-once continuation. It remains preserved and is not resumed because the acceptance tree changes next.
+- pi-runs then fixed its acceptance-only concurrent-inspector cleanup: all case inspectors still start concurrently, but all settle before a rejection propagates, preventing the failure-path timer/poll leak seen after authority #3. Focused soak tests pass **17/17**; default pi-runs regression is **55 passed / 0 failed / 1 skipped** with the real Pi loader passing.
+
 Still blocking a v1 tag:
 
-- run a new frozen formal endurance authority from pi-runs `bcc9eaf` until `v1_endurance.qualified=true`. All failed authorities remain preserved/non-resumable.
+- start the final frozen formal endurance authority from the cleanup-fixed pi-runs tree and run/resume that authority until `v1_endurance.qualified=true`. Earlier evidence remains preserved but does not count toward the final authority.
 
 No human `continue` message is permitted in the formal continuation gates.
