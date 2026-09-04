@@ -273,6 +273,36 @@ function Start-Resident($Context) {
     }
 }
 
+function Restart-ServeChild($Context, [int]$OldSupervisorPid, [int]$OldServePid, [int]$Seconds = 40) {
+    $oldServe = Get-Process -Id $OldServePid -ErrorAction Stop
+    Stop-Process -Id $OldServePid -Force -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $supervisorPid = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
+        $servePid = Get-PidFromHeartbeat $Context.data_dir "serve.pid"
+        if ($supervisorPid -and $supervisorPid -ne $OldSupervisorPid) {
+            throw "supervisor PID changed during serve-child crash: $OldSupervisorPid -> $supervisorPid"
+        }
+        if ($servePid -and $servePid -ne $OldServePid) {
+            $supervisor = Get-Process -Id $OldSupervisorPid -ErrorAction SilentlyContinue
+            $serve = Get-Process -Id $servePid -ErrorAction SilentlyContinue
+            if ($supervisor -and $serve) {
+                if ($serve.SessionId -ne $oldServe.SessionId -or $supervisor.SessionId -ne $serve.SessionId) {
+                    throw "restarted serve left the resident desktop session"
+                }
+                [void](Wait-Hello $Context.endpoint 10)
+                return [pscustomobject]@{
+                    supervisor_pid = $OldSupervisorPid
+                    serve_pid = $servePid
+                    session_id = $serve.SessionId
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    throw "runwatch supervise did not replace serve child $OldServePid within ${Seconds}s"
+}
+
 function Remove-ResidentTask($Context) {
     try { Stop-Resident $Context } catch {}
     [void](Invoke-SchtasksBestEffort @("/Delete", "/TN", $Context.task_name, "/F"))
@@ -407,10 +437,10 @@ function Invoke-Round($State, $Context, [int]$RoundNo) {
     Start-Sleep -Seconds ([int]$State.crash_after_seconds)
     $beforeSupervisor = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
     $beforeServe = Get-PidFromHeartbeat $Context.data_dir "serve.pid"
-    Stop-Resident $Context
-    $after = Start-Resident $Context
-    if ($after.supervisor_pid -eq $beforeSupervisor -or $after.serve_pid -eq $beforeServe) {
-        throw "round $RoundNo resident PIDs did not change across crash/restart"
+    if (-not $beforeSupervisor -or -not $beforeServe) { throw "round $RoundNo resident heartbeat is incomplete before crash" }
+    $after = Restart-ServeChild $Context $beforeSupervisor $beforeServe 40
+    if ($after.supervisor_pid -ne $beforeSupervisor -or $after.serve_pid -eq $beforeServe) {
+        throw "round $RoundNo supervisor did not replace exactly one serve child"
     }
 
     $slurmReplay = (Invoke-Rw $Context.endpoint "retry_run_v1" @{ retry = $slurmRetry }).run
