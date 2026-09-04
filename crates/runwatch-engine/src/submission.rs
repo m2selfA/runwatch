@@ -458,8 +458,13 @@ async fn continue_remote_submission(
     attempt.status = RunStatus::Queued;
     attempt.updated_at = now;
     attempt.error = None;
-    store.persist_run_attempt_event(&run, &attempt, "scheduler_submitted")?;
-    Ok(run)
+    if store.persist_submission_acceptance(&run, &attempt, "scheduler_submitted")? {
+        Ok(run)
+    } else {
+        store
+            .get(&run.run_id)?
+            .context("Run disappeared after idempotent scheduler acceptance")
+    }
 }
 
 pub async fn submit_remote_run(

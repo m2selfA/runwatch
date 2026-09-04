@@ -556,9 +556,19 @@ fn continue_local_submission(
     attempt.status = RunStatus::Running;
     attempt.updated_at = now;
     attempt.error = None;
-    store.persist_run_attempt_event(&run, &attempt, "local_process_started")?;
-    arm(&attempt)?;
-    Ok(run)
+    let accepted = store.persist_submission_acceptance(&run, &attempt, "local_process_started")?;
+    let canonical_run = if accepted {
+        run
+    } else {
+        store
+            .get(&attempt.run_id)?
+            .context("Run disappeared after idempotent local Process acceptance")?
+    };
+    let canonical_attempt = store
+        .get_attempt(&attempt.run_id, attempt.attempt_no)?
+        .context("Local Process Attempt disappeared after acceptance")?;
+    arm(&canonical_attempt)?;
+    Ok(canonical_run)
 }
 
 pub fn submit_local_run(store: &RunStore, spec: SubmitRunSpec) -> Result<RunRecord> {

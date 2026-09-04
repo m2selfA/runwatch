@@ -1642,6 +1642,131 @@ impl RunStore {
         tx.commit()?;
         Ok(())
     }
+
+    pub fn persist_submission_acceptance(
+        &self,
+        run: &RunRecord,
+        attempt: &RunAttemptRecord,
+        event_kind: &str,
+    ) -> Result<bool> {
+        if run.run_id != attempt.run_id || run.attempt_no != Some(attempt.attempt_no) {
+            bail!("submission acceptance Run/Attempt identity mismatch");
+        }
+        let job_id = attempt
+            .job_id
+            .as_deref()
+            .context("submission acceptance Attempt has no handle")?;
+        if run.job_id.as_deref() != Some(job_id)
+            || run.status != attempt.status
+            || !matches!(run.status, RunStatus::Queued | RunStatus::Running)
+        {
+            bail!("submission acceptance must carry one queued/running handle snapshot");
+        }
+
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_run_json = tx
+            .query_row(
+                "SELECT record_json FROM runs WHERE run_id=?1",
+                [run.run_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .with_context(|| format!("unknown run {} during submission acceptance", run.run_id))?;
+        let current_attempt_json = tx
+            .query_row(
+                "SELECT record_json FROM run_attempts WHERE run_id=?1 AND attempt_no=?2",
+                params![attempt.run_id, attempt.attempt_no],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .with_context(|| {
+                format!(
+                    "Run {} is missing Attempt {} during submission acceptance",
+                    attempt.run_id, attempt.attempt_no
+                )
+            })?;
+        let current_run: RunRecord =
+            serde_json::from_str(&current_run_json).context("parse current submission Run")?;
+        let current_attempt: RunAttemptRecord = serde_json::from_str(&current_attempt_json)
+            .context("parse current submission Attempt")?;
+
+        if current_run.attempt_no != Some(attempt.attempt_no) {
+            bail!(
+                "submission acceptance Attempt {} is no longer current for Run {}",
+                attempt.attempt_no,
+                run.run_id
+            );
+        }
+        if let Some(existing) = current_attempt.job_id.as_deref() {
+            if existing != job_id || current_run.job_id.as_deref() != Some(existing) {
+                bail!(
+                    "submission acceptance handle conflict for Run {} Attempt {}",
+                    run.run_id,
+                    attempt.attempt_no
+                );
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+        if current_run.job_id.is_some()
+            || current_run.status != RunStatus::Submitting
+            || current_attempt.status != RunStatus::Submitting
+        {
+            bail!("submission acceptance canonical state is not a clean Submitting snapshot");
+        }
+        if current_run.runner != run.runner
+            || current_run.host != run.host
+            || current_run.workspace != run.workspace
+            || current_run.name != run.name
+            || current_attempt.runner != attempt.runner
+            || current_attempt.host != attempt.host
+            || current_attempt.workdir != attempt.workdir
+            || current_attempt.command != attempt.command
+            || current_attempt.resources != attempt.resources
+            || current_attempt.job_name != attempt.job_name
+            || current_attempt.script_path != attempt.script_path
+            || current_attempt.stdout_path != attempt.stdout_path
+            || current_attempt.stderr_path != attempt.stderr_path
+            || current_attempt.terminal_path != attempt.terminal_path
+            || current_attempt.receipt_path != attempt.receipt_path
+        {
+            bail!("submission acceptance changed immutable execution identity");
+        }
+
+        tx.execute(
+            "UPDATE runs SET record_json=?2, updated_at=?3 WHERE run_id=?1",
+            params![
+                run.run_id,
+                serde_json::to_string(run)?,
+                run.updated_at.to_rfc3339()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE run_attempts SET record_json=?3 WHERE run_id=?1 AND attempt_no=?2",
+            params![
+                attempt.run_id,
+                attempt.attempt_no,
+                serde_json::to_string(attempt)?
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO run_events(run_id, at, kind, payload_json) VALUES(?1, ?2, ?3, ?4)",
+            params![
+                run.run_id,
+                run.updated_at.to_rfc3339(),
+                event_kind,
+                serde_json::to_string(&serde_json::json!({
+                    "attempt_no": attempt.attempt_no,
+                    "status": attempt.status,
+                    "job_id": attempt.job_id,
+                    "error": attempt.error,
+                }))?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
 }
 
 fn requeue_expired_delivery_claims(tx: &Transaction<'_>, now: DateTime<Utc>) -> Result<usize> {
@@ -1777,6 +1902,118 @@ mod tests {
         let rows = store.list().expect("list");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, RunStatus::Running);
+        cleanup(&db);
+    }
+
+    #[test]
+    fn submission_acceptance_is_idempotent_and_never_regresses_advanced_state() {
+        use crate::types::{RemoteWorkspaceRef, RunAttemptRecord, RunResources};
+
+        let (db, legacy) = test_paths("submission-acceptance-cas");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "cluster".into(),
+            cwd: "/shared/project".into(),
+        };
+        let mut submitting = RunRecord::new("r-accept".into(), "cluster".into(), RunnerKind::Slurm);
+        submitting.status = RunStatus::Submitting;
+        submitting.workspace = Some(workspace.clone());
+        submitting.attempt_no = Some(1);
+        submitting.updated_at = now;
+        let submitting_attempt = RunAttemptRecord {
+            run_id: submitting.run_id.clone(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: "cluster".into(),
+            workdir: workspace.cwd.clone(),
+            command: "science --run".into(),
+            resources: RunResources::default(),
+            job_name: "rw-r-accept-a1".into(),
+            job_id: None,
+            script_path: "/shared/project/.runwatch/r-accept/attempt-1/run.sh".into(),
+            stdout_path: "/shared/project/.runwatch/r-accept/attempt-1/stdout.log".into(),
+            stderr_path: "/shared/project/.runwatch/r-accept/attempt-1/stderr.log".into(),
+            terminal_path: "/shared/project/.runwatch/r-accept/attempt-1/terminal.json".into(),
+            receipt_path: "/shared/project/.runwatch/r-accept/attempt-1/submission.receipt".into(),
+            status: RunStatus::Submitting,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        assert!(
+            store
+                .create_submission_intent(&submitting, &submitting_attempt, None)
+                .unwrap()
+        );
+
+        let mut queued = submitting.clone();
+        queued.status = RunStatus::Queued;
+        queued.job_id = Some("31852".into());
+        queued.updated_at += ChronoDuration::seconds(1);
+        let mut queued_attempt = submitting_attempt.clone();
+        queued_attempt.status = RunStatus::Queued;
+        queued_attempt.job_id = Some("31852".into());
+        queued_attempt.updated_at = queued.updated_at;
+        assert!(
+            store
+                .persist_submission_acceptance(&queued, &queued_attempt, "scheduler_submitted")
+                .unwrap()
+        );
+        assert!(
+            !store
+                .persist_submission_acceptance(&queued, &queued_attempt, "scheduler_submitted")
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .list_run_events(&queued.run_id, 50)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.kind == "scheduler_submitted")
+                .count(),
+            1
+        );
+
+        let mut running = queued.clone();
+        running.status = RunStatus::Running;
+        running.updated_at += ChronoDuration::seconds(1);
+        let mut running_attempt = queued_attempt.clone();
+        running_attempt.status = RunStatus::Running;
+        running_attempt.updated_at = running.updated_at;
+        store
+            .persist_run_attempt_event(&running, &running_attempt, "scheduler_observed")
+            .unwrap();
+
+        assert!(
+            !store
+                .persist_submission_acceptance(&queued, &queued_attempt, "scheduler_submitted")
+                .unwrap()
+        );
+        let canonical = store.get(&queued.run_id).unwrap().unwrap();
+        assert_eq!(canonical.status, RunStatus::Running);
+        assert_eq!(canonical.job_id.as_deref(), Some("31852"));
+        let canonical_attempt = store.get_attempt(&queued.run_id, 1).unwrap().unwrap();
+        assert_eq!(canonical_attempt.status, RunStatus::Running);
+        assert_eq!(
+            store
+                .list_run_events(&queued.run_id, 50)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.kind == "scheduler_submitted")
+                .count(),
+            1
+        );
+
+        let mut conflict_run = queued.clone();
+        conflict_run.job_id = Some("99999".into());
+        let mut conflict_attempt = queued_attempt.clone();
+        conflict_attempt.job_id = Some("99999".into());
+        let error = store
+            .persist_submission_acceptance(&conflict_run, &conflict_attempt, "scheduler_submitted")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("handle conflict"), "{error}");
         cleanup(&db);
     }
 
