@@ -1,4 +1,4 @@
-use crate::model::{RunDetailView, build_detail};
+use crate::model::{HostCardView, RunDetailView, build_detail};
 use anyhow::{Context, Result, anyhow};
 use runwatch_core::{
     ObservationRecord, RunAttemptRecord, RunContinuationStatus, RunEventRecord, RunRecord,
@@ -156,30 +156,29 @@ pub async fn load_detail(run_id: &str, tail: usize, event_limit: usize) -> Resul
     ))
 }
 
-pub fn host_summary() -> Result<String> {
-    let hosts = runwatch_ssh::parse_ssh_config()?;
-    if hosts.is_empty() {
-        return Ok("No exact Host entries in ~/.ssh/config".into());
-    }
-    Ok(hosts
+pub fn host_inventory() -> Result<Vec<HostCardView>> {
+    Ok(runwatch_ssh::parse_ssh_config()?
         .into_iter()
         .map(|host| {
-            let jumps = if host.proxy_jump.is_empty() {
-                String::new()
-            } else {
-                format!(" via {}", host.proxy_jump.join(", "))
-            };
-            format!(
-                "{}   {}@{}:{}{}",
-                host.alias,
+            let endpoint = format!(
+                "{}@{}:{}",
                 host.user.as_deref().unwrap_or("?"),
                 host.hostname,
-                host.port,
-                jumps
-            )
+                host.port
+            );
+            let route = if host.proxy_jump.is_empty() {
+                "Direct".into()
+            } else {
+                format!("ProxyJump · {}", host.proxy_jump.join(" → "))
+            };
+            HostCardView {
+                alias: host.alias,
+                endpoint,
+                route,
+                live_runs: 0,
+            }
         })
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect())
 }
 
 pub fn sibling_cli() -> Result<std::path::PathBuf> {

@@ -1,5 +1,5 @@
 use crate::ipc_client;
-use crate::model::{DashboardSnapshot, RunDetailView, project_dashboard};
+use crate::model::{DashboardSnapshot, HostCardView, RunDetailView, project_dashboard};
 use crate::notifications::{Notice, NoticeKind, TransitionTracker};
 use chrono::Utc;
 use runwatch_core::{SubmitRunSpec, autostart};
@@ -34,7 +34,7 @@ pub enum UiEvent {
         request_id: u64,
         detail: RunDetailView,
     },
-    Hosts(Result<String, String>),
+    Hosts(Result<Vec<HostCardView>, String>),
     ManualSubmitResult {
         run_id: String,
         result: Result<(), String>,
@@ -52,7 +52,7 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
     std::thread::Builder::new()
         .name("runwatch-gui-controller".into())
         .spawn(move || {
-            let hosts = ipc_client::host_summary().map_err(|error| format!("{error:#}"));
+            let hosts = ipc_client::host_inventory().map_err(|error| format!("{error:#}"));
             if ui.send(UiEvent::Hosts(hosts)).is_err() {
                 return;
             }

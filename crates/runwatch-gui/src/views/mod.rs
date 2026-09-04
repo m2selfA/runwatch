@@ -1,48 +1,9 @@
+pub mod hosts;
 pub mod runs;
 
 use crate::controller::Command;
 use tokio::sync::mpsc;
 use windui::prelude::*;
-
-pub fn hosts_page(hosts: Signal<String>, usage: Signal<String>) -> Element {
-    Element::col()
-        .fill()
-        .padding(18)
-        .spacing(12)
-        .child(
-            Element::label("SSH Hosts")
-                .font_size(22.0)
-                .fg(Color::hex(0x243746))
-                .width_match(),
-        )
-        .child(
-            Element::label("Read-only projection of exact Host aliases from ~/.ssh/config")
-                .font_size(13.0)
-                .fg(Color::hex(0x5B6B75))
-                .width_match(),
-        )
-        .child(
-            Element::card(
-                "Live Run usage",
-                Element::label_signal(usage)
-                    .font_size(12.5)
-                    .fg(Color::hex(0x2AA8A0))
-                    .width_match(),
-            )
-            .width_match(),
-        )
-        .child(
-            Element::scroll()
-                .fill()
-                .child(
-                    Element::label_signal(hosts)
-                        .font_size(13.0)
-                        .fg(Color::hex(0x243746))
-                        .width_match(),
-                )
-                .weight(1.0),
-        )
-}
 
 pub fn service_page(
     service: Signal<String>,

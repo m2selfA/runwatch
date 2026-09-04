@@ -22,6 +22,39 @@ pub enum RunSort {
     Host,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostCardView {
+    pub alias: String,
+    pub endpoint: String,
+    pub route: String,
+    pub live_runs: usize,
+}
+
+impl HostCardView {
+    pub fn usage_label(&self) -> String {
+        match self.live_runs {
+            0 => "Idle · no live Runs".into(),
+            1 => "1 live Run".into(),
+            count => format!("{count} live Runs"),
+        }
+    }
+}
+
+pub fn apply_host_run_usage(hosts: &mut [HostCardView], rows: &[RunRow]) {
+    let counts = active_host_counts(rows);
+    for host in hosts {
+        host.live_runs = counts.get(&host.alias).copied().unwrap_or_default();
+    }
+}
+
+fn active_host_counts(rows: &[RunRow]) -> std::collections::BTreeMap<String, usize> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for row in rows.iter().filter(|row| row.active) {
+        *counts.entry(row.host.clone()).or_default() += 1;
+    }
+    counts
+}
+
 #[derive(Debug, Clone)]
 pub struct RunRow {
     pub run_id: String,
@@ -288,10 +321,7 @@ pub fn sort_rows(rows: &mut [RunRow], sort: RunSort) {
 }
 
 pub fn host_usage_summary(rows: &[RunRow]) -> String {
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    for row in rows.iter().filter(|row| row.active) {
-        *counts.entry(row.host.clone()).or_default() += 1;
-    }
+    let counts = active_host_counts(rows);
     if counts.is_empty() {
         "No live Runs are currently using an SSH/local Host.".into()
     } else {
@@ -733,6 +763,42 @@ mod tests {
         let text = host_usage_summary(&rows);
         assert!(text.contains("gm00   2 live Runs"));
         assert!(!text.contains("other"));
+    }
+
+    #[test]
+    fn host_cards_receive_live_run_counts_by_exact_alias() {
+        let now = Utc::now();
+        let mut rows = dashboard(
+            vec![
+                run("a", RunStatus::Running, now),
+                run("b", RunStatus::Queued, now),
+                run("c", RunStatus::Succeeded, now),
+            ],
+            vec![],
+            vec![],
+            now,
+        )
+        .rows;
+        rows[0].host = "gm00".into();
+        rows[1].host = "gm00".into();
+        rows[2].host = "compute-gw".into();
+        let mut hosts = vec![
+            HostCardView {
+                alias: "gm00".into(),
+                endpoint: "u@gm00:22".into(),
+                route: "Direct".into(),
+                live_runs: 0,
+            },
+            HostCardView {
+                alias: "compute-gw".into(),
+                endpoint: "u@compute:22".into(),
+                route: "Direct".into(),
+                live_runs: 99,
+            },
+        ];
+        apply_host_run_usage(&mut hosts, &rows);
+        assert_eq!(hosts[0].live_runs, 2);
+        assert_eq!(hosts[1].live_runs, 0);
     }
 
     #[test]

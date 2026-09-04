@@ -1,4 +1,4 @@
-use crate::model::{DashboardSnapshot, RunDetailView, RunRow};
+use crate::model::{DashboardSnapshot, HostCardView, RunDetailView, RunRow};
 use chrono::{Duration, Utc};
 use runwatch_core::{RunStatus, RunnerKind};
 
@@ -6,22 +6,29 @@ pub struct GuiFixture {
     pub snapshot: DashboardSnapshot,
     pub detail: Option<RunDetailView>,
     pub offline_error: Option<String>,
-    pub hosts: String,
+    pub hosts: Vec<HostCardView>,
     pub service: String,
     pub open_create_dialog: bool,
+    pub selected_tab: usize,
 }
 
 pub fn named(name: &str) -> Option<GuiFixture> {
     match name {
-        "dashboard" => Some(build(false, false, false)),
-        "detail" => Some(build(true, false, false)),
-        "offline" => Some(build(false, true, false)),
-        "new-run" => Some(build(false, false, true)),
+        "dashboard" => Some(build(false, false, false, 0)),
+        "detail" => Some(build(true, false, false, 0)),
+        "offline" => Some(build(false, true, false, 0)),
+        "new-run" => Some(build(false, false, true, 0)),
+        "hosts" => Some(build(false, false, false, 1)),
         _ => None,
     }
 }
 
-fn build(with_detail: bool, offline: bool, open_create_dialog: bool) -> GuiFixture {
+fn build(
+    with_detail: bool,
+    offline: bool,
+    open_create_dialog: bool,
+    selected_tab: usize,
+) -> GuiFixture {
     let now = Utc::now();
     let rows = vec![
         RunRow {
@@ -100,12 +107,38 @@ fn build(with_detail: bool, offline: bool, open_create_dialog: bool) -> GuiFixtu
         snapshot,
         detail,
         offline_error: offline.then(|| "fixture: runwatchd named pipe is unavailable".into()),
-        hosts: "gm00   shark@gm00.example:22\ncompute-gw   user@10.0.0.5:22 via bastion".into(),
+        hosts: vec![
+            HostCardView {
+                alias: "gm00".into(),
+                endpoint: "shark@gm00.example:22".into(),
+                route: "Direct".into(),
+                live_runs: 0,
+            },
+            HostCardView {
+                alias: "compute-gw".into(),
+                endpoint: "user@10.0.0.5:22".into(),
+                route: "ProxyJump · bastion".into(),
+                live_runs: 0,
+            },
+            HostCardView {
+                alias: "macos-3dv0".into(),
+                endpoint: "inter@macos-3dv0.internal:22".into(),
+                route: "Direct".into(),
+                live_runs: 0,
+            },
+            HostCardView {
+                alias: "science-storage-gateway".into(),
+                endpoint: "research@storage.internal.example:22022".into(),
+                route: "ProxyJump · cap00 → campus-bastion → storage-edge".into(),
+                live_runs: 0,
+            },
+        ],
         service: if offline {
             "runwatchd unavailable\nfixture: named pipe unavailable\n\nThe GUI will not take over scheduler polling.".into()
         } else {
             "runwatchd 0.2.0-dev\nprotocol: 1 · capabilities: 24\npid: 4242\npolling: active\nresident service: enabled\nGUI autostart: enabled\npackage siblings: complete".into()
         },
         open_create_dialog,
+        selected_tab,
     }
 }

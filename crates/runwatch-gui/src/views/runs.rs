@@ -423,20 +423,20 @@ impl RunsViewState {
         let activate_commands = commands.clone();
         let table = Element::table_virtual(
             vec![
-                ("State", 1.0),
-                ("Name", 2.0),
-                ("Runner", 0.8),
+                ("State", 0.9),
+                ("Name", 1.75),
+                ("Runner", 0.9),
                 ("Host", 0.85),
                 ("Handle", 1.0),
-                ("Observation", 1.65),
-                ("Continuation", 1.05),
-                ("Updated", 1.2),
+                ("Observation", 1.55),
+                ("Continuation", 1.5),
+                ("Updated", 1.15),
             ],
             self.table_rows,
             42,
         )
         .cell_lines(1)
-        .actions("", 0.7, move |row| {
+        .actions("", 0.65, move |row| {
             let state = action_state.clone();
             let commands = action_commands.clone();
             Element::button("Open")

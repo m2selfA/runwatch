@@ -13,6 +13,7 @@ mod views;
 use controller::{Command, UiEvent};
 use notifications::{Notice, NoticeKind};
 use runwatch_core::autostart;
+use views::hosts::HostsViewState;
 use views::runs::RunsViewState;
 use windui::core::EventCtx;
 use windui::prelude::*;
@@ -21,11 +22,11 @@ fn main() {
     let gui_autostart_on = signal(autostart::gui_is_enabled());
     let daemon_autostart_on = signal(autostart::daemon_is_enabled());
     let pause_ui = signal(false);
-    let hosts_text = signal("Reading ~/.ssh/config...".to_string());
-    let hosts_usage = signal("No live Run host usage yet.".to_string());
     let service_text = signal("Connecting to runwatchd...".to_string());
     let package_text = ipc_client::package_summary();
     let runs_state = RunsViewState::new();
+    let hosts_state = HostsViewState::new();
+    let selected_tab = signal(0usize);
 
     let mark = icon::rgba(32);
     let window_icon = WindowIcon::from_rgba(32, 32, mark.clone());
@@ -33,9 +34,17 @@ fn main() {
         .icon(window_icon.expect("icon rgba"))
         .bg(Color::hex(0xF7F4EE))
         .hide_on_close();
+    let resize_hosts_state = hosts_state.clone();
+    let resize_hosts_tab = selected_tab;
+    app = app.on_interval(std::time::Duration::from_millis(250), move |ctx| {
+        if resize_hosts_tab.get() == 1 {
+            resize_hosts_state.set_viewport_width(ctx.bounds().w);
+        }
+    });
 
     let ui_tx = app.channel::<UiEvent>({
         let runs_state = runs_state.clone();
+        let hosts_state = hosts_state.clone();
         move |ctx, event| match event {
             UiEvent::Snapshot { snapshot, notices } => {
                 pause_ui.set(snapshot.paused);
@@ -58,7 +67,7 @@ fn main() {
                     },
                     package_text
                 ));
-                hosts_usage.set(model::host_usage_summary(&snapshot.rows));
+                hosts_state.apply_run_usage(&snapshot.rows);
                 runs_state.apply_snapshot(snapshot);
                 for notice in notices {
                     show_notice(ctx, notice);
@@ -97,12 +106,7 @@ fn main() {
                     );
                 }
             },
-            UiEvent::Hosts(result) => match result {
-                Ok(hosts) => hosts_text.set(hosts),
-                Err(error) => hosts_text.set(format!(
-                    "Could not resolve OpenSSH Host aliases.\n{error}\n\nThis is a configuration error, not an empty Host list."
-                )),
-            },
+            UiEvent::Hosts(result) => hosts_state.apply_hosts(result),
             UiEvent::AutostartState {
                 daemon_enabled,
                 gui_enabled,
@@ -119,12 +123,13 @@ fn main() {
     #[cfg(debug_assertions)]
     let commands = if let Ok(name) = std::env::var("RUNWATCH_GUI_FIXTURE") {
         let fixture = fixtures::named(&name).unwrap_or_else(|| {
-            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, or new-run")
+            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, new-run, or hosts")
         });
         pause_ui.set(fixture.snapshot.paused);
-        hosts_text.set(fixture.hosts);
+        selected_tab.set(fixture.selected_tab);
         service_text.set(fixture.service);
-        hosts_usage.set(model::host_usage_summary(&fixture.snapshot.rows));
+        hosts_state.apply_hosts(Ok(fixture.hosts));
+        hosts_state.apply_run_usage(&fixture.snapshot.rows);
         runs_state.apply_snapshot(fixture.snapshot);
         if let Some(detail) = fixture.detail {
             runs_state.apply_fixture_detail(detail);
@@ -153,10 +158,10 @@ fn main() {
     app = app.tray(tray);
 
     let tabs = Element::tabs(
-        signal(0usize),
+        selected_tab,
         vec![
             ("Runs", runs_state.build(commands.clone())),
-            ("Hosts", views::hosts_page(hosts_text, hosts_usage)),
+            ("Hosts", hosts_state.build()),
             (
                 "Service",
                 views::service_page(service_text, daemon_autostart_on, commands.clone()),

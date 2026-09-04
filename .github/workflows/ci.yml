@@ -55,25 +55,30 @@ jobs:
           $fixtureDir = Join-Path $env:RUNNER_TEMP 'runwatch-gui-fixtures'
           New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
           Add-Type -AssemblyName System.Drawing
-          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run')) {
+          function Render-Fixture([string]$fixture, [int]$width, [int]$height, [string]$name) {
             $env:RUNWATCH_GUI_FIXTURE = $fixture
-            $png = Join-Path $fixtureDir "$fixture.png"
-            $process = Start-Process -FilePath (Resolve-Path '.\target\debug\runwatch-gui.exe') -ArgumentList @('--screenshot', $png, '--size', '1080', '720', '--renderer', 'software') -Wait -PassThru
+            $png = Join-Path $fixtureDir "$name.png"
+            $process = Start-Process -FilePath (Resolve-Path '.\target\debug\runwatch-gui.exe') -ArgumentList @('--screenshot', $png, '--size', [string]$width, [string]$height, '--renderer', 'software') -Wait -PassThru
             if ($process.ExitCode -ne 0) {
-              throw "GUI fixture $fixture exited $($process.ExitCode)"
+              throw "GUI fixture $fixture at ${width}x${height} exited $($process.ExitCode)"
             }
             if (-not (Test-Path -LiteralPath $png)) {
-              throw "GUI fixture $fixture did not produce a screenshot"
+              throw "GUI fixture $fixture at ${width}x${height} did not produce a screenshot"
             }
             $image = [System.Drawing.Image]::FromFile($png)
             try {
-              if ($image.Width -ne 1080 -or $image.Height -ne 720) {
-                throw "GUI fixture $fixture rendered $($image.Width)x$($image.Height), expected 1080x720"
+              if ($image.Width -ne $width -or $image.Height -ne $height) {
+                throw "GUI fixture $fixture rendered $($image.Width)x$($image.Height), expected ${width}x${height}"
               }
             } finally {
               $image.Dispose()
             }
           }
+          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'hosts')) {
+            Render-Fixture $fixture 1080 720 $fixture
+          }
+          Render-Fixture 'hosts' 760 720 'hosts-narrow'
+          Render-Fixture 'hosts' 1440 900 'hosts-wide'
           Remove-Item Env:RUNWATCH_GUI_FIXTURE -ErrorAction SilentlyContinue
       - name: Build portable Windows package
         run: cargo run -p xtask -- package --output-dir dist/ci-windows

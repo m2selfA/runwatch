@@ -54,6 +54,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R12 | Post-v0.1 portability CI + GUI polish | **completed 2026-09-04 — Windows package CI + Linux glibc 2.17 artifact gate green; GUI `ssh -G` console flashing fixed** |
 | R13 | Human Run Console GUI redesign | **completed 2026-09-04 — packaged Limited-user desktop acceptance closed for dashboard/detail/logs/probe/cancel/Service/hide; R13d dynamic tray tooltip/native background notification remains explicitly deferred behind WindUI 0.14 public API** |
 | R14 | Manual Human Run submission + GUI CI gate | **completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; fresh GitHub CI #33854434483 passed Windows four-fixture rendering/package and Linux glibc 2.17 gates** |
+| R15 | GUI layout polish: single-line Run headers + responsive Host cards | **completed locally 2026-09-04 — 1080×720 Continuation header is single-line; Hosts use equal-size longest-content cards and responsive columns; 127 tests plus 760/1080/1440 fixture matrix green; fresh GitHub CI pending** |
 
 ## R0 completion record
 
@@ -820,6 +821,23 @@ R13 design already required off-screen fresh-runner coverage for dashboard/detai
 - [x] Fixture mode remains debug-only, preserving the R13 guarantee that production packages cannot be switched to synthetic dashboard data through `RUNWATCH_GUI_FIXTURE`.
 
 Fresh-runner proof is closed for implementation commit `7b5390f889d9b773018a190e20eb4e073d772d1e` in GitHub Actions **#33854434483**. Linux `glibc 2.17` completed successfully including binary upload. Windows `windows-2022` passed formatting, workspace check, **124 tests / 0 failed / 8 ignored**, the new four-fixture `dashboard/detail/offline/new-run` 1080x720 software-render step, optimized package, package verification and artifact upload. The Windows artifact is ID **9929948488**, **10,281,409 bytes**, digest `sha256:1290e8e4ef947dfe490371feb1fc54a184536c02f4afc393efe8c32ffe6a637d`; its inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,291,912 bytes**, SHA-256 `83fe2e5610c757ef3c92fa2ea82ea627b9c813f06e5c2c27df9a149c92965ce8`. The Linux artifact is ID **9929722892**, **6,127,187 bytes**, digest `sha256:2a8822f50c00cece81979b87ad71ca6809b2179f804f7a75ce5b3100da04eb0b`. The only workflow annotations are GitHub platform notices that Node 20-based `actions/checkout@v4` / `actions/upload-artifact@v4` are being forced onto Node 24; they are not project failures.
+
+## R15 current work
+
+### R15 — single-line Runs header + responsive Host cards — locally completed 2026-09-04
+
+This block is visual/product polish only; it does not widen GUI authority. Host discovery still comes exclusively from `runwatch-ssh` / effective OpenSSH configuration, and opening Hosts still creates no SSH connection.
+
+- [x] Rebalanced Runs virtual-table weights so the default 1080×720 header keeps **State / Name / Runner / Host / Handle / Observation / Continuation / Updated** on one line. `Continuation` moves from weight `1.05` to `1.5`; width is recovered mainly from Name/Observation and the empty action header while body `.cell_lines(1)` remains unchanged.
+- [x] Re-rendered the 1080×720 dashboard and added a bounded pixel-band probe over the `Continuation` header region. The header produced exactly one contiguous dark-text band (`y=301..310`) rather than a wrapped second line.
+- [x] Replaced the Hosts text blob with a structured safe projection: alias, effective `user@hostname:port`, ProxyJump route and daemon-snapshot live Run count. Private identity/known-host paths are not exposed in the card model.
+- [x] Added equal-size Host cards. A single preferred width is derived from the longest alias/endpoint/route across the inventory (bounded to 280..390 logical px); the longest wrapped route determines the common card height. Shorter cards never collapse independently.
+- [x] Added responsive wall layout driven by current client width. Narrow windows converge to one card per row and wider windows gain columns automatically; no fixed `N-column` desktop assumption is embedded in the Hosts page.
+- [x] Added exact-alias live-Run count projection and three focused regressions: responsive column growth, longest-content shared card geometry, and terminal Runs excluded from per-card live counts. GUI focused suite is now **20 passed / 0 failed**.
+- [x] Added debug-only `hosts` fixture and extended the Windows CI fixture matrix. Local software-render acceptance passed `dashboard` at 1080×720 and Hosts at **760×720**, **1080×720**, and **1440×900**; the CI-equivalent matrix of five default fixtures plus two responsive Hosts sizes also passed and cleaned all temporary PNGs.
+- [x] Final local workspace gates: `cargo fmt -- --check` pass; `cargo check --all-targets` pass; `cargo test --all-targets` **127 passed / 0 failed / 8 ignored**. The only compiler note remains the pre-existing `russh 0.54.5` future-incompatibility warning.
+
+Fresh GitHub Actions proof and artifact metadata remain to be recorded after the implementation commit is pushed.
 
 ## Known transitional debt
 

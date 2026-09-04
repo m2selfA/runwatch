@@ -486,9 +486,9 @@ The first Human Run Console implementation now follows the architecture above. `
 
 `probe_run` is intentionally daemon-owned. It selects one Run for execution observation through the same engine/HostPool path as ordinary ticks; the GUI never creates an SSH connection. Existing daemon terminal-Delivery reconciliation still runs as canonical maintenance and is not a GUI-owned scheduler loop.
 
-The implemented dashboard keeps execution and observation independent, adds continuation/cancel attention, and supports Active/Attention/All filtering, search and explicit Priority/Newest/Name/Host ordering on a virtual table. Its text cells are capped at one rendered line (`cell_lines(1)`), and the Runs table/detail workspace now share vertical space through flex rather than a fixed 280px table height, so the default 1080×720 window keeps both the row band and detail content usable. Detail tabs keep Logs and Event history bounded (logs <=500 lines per request, recent events <=200) and localize partial failures. Continuation projection deliberately omits session files, origin-leaf IDs, adapter paths and lease/owner internals.
+The implemented dashboard keeps execution and observation independent, adds continuation/cancel attention, and supports Active/Attention/All filtering, search and explicit Priority/Newest/Name/Host ordering on a virtual table. Its data cells are capped at one rendered line (`cell_lines(1)`), and the column weights reserve enough width for every header label to remain one line at the default 1080×720 window, including `Continuation`; long row values are clipped rather than allowed to raise the row. The Runs table/detail workspace shares vertical space through flex rather than a fixed 280px table height, so both the row band and detail content remain usable. Detail tabs keep Logs and Event history bounded (logs <=500 lines per request, recent events <=200) and localize partial failures. Continuation projection deliberately omits session files, origin-leaf IDs, adapter paths and lease/owner internals.
 
-Service authority is also kept separate from Settings: resident Task Scheduler/supervisor control belongs on Service and requires confirmation before disabling; Settings contains only desktop UX choices. The installed Task carries an explicit current-user/SYSTEM/Administrators security descriptor so a normal limited desktop GUI can manage a Task even when installation happened from an elevated process. Removal first quiesces the registration before stopping/deleting the supervisor and rolls back Enable on failure, closing the one-minute trigger resurrection race. Hosts remains a read-only OpenSSH projection plus live Run usage computed from daemon snapshots; merely opening the page does not connect to every Host.
+Service authority is also kept separate from Settings: resident Task Scheduler/supervisor control belongs on Service and requires confirmation before disabling; Settings contains only desktop UX choices. The installed Task carries an explicit current-user/SYSTEM/Administrators security descriptor so a normal limited desktop GUI can manage a Task even when installation happened from an elevated process. Removal first quiesces the registration before stopping/deleting the supervisor and rolls back Enable on failure, closing the one-minute trigger resurrection race. Hosts remains a read-only OpenSSH projection plus live Run usage computed from daemon snapshots; merely opening the page does not connect to every Host. The GUI projects only safe display fields (`alias`, effective endpoint, ProxyJump route and live-Run count), not identity/known-host file paths. Hosts are rendered as a responsive wall of equal-size cards: one global size is derived from the longest card content, then the number of cards per row is recomputed from current client width.
 
 One concrete WindUI 0.14 limitation is now proven rather than hypothetical: its public tray API does not expose a runtime tray handle/tooltip mutation surface, and native `notify()` is available only inside tray callback context, not from the background controller/app-channel `EventCtx`. Therefore R13 does **not** duplicate a second tray icon or discover private Win32 handles merely to implement a dynamic tooltip/background native notification. Transition attention is currently represented by the dashboard plus in-app toasts; a clean upstream/public tray-notification bridge is the remaining R13d UI-framework item.
 
@@ -506,23 +506,31 @@ The form performs only ergonomic normalization: optional human name generation, 
 
 Remote scheduler authoring also calls out a practical filesystem invariant in the UI: the selected workspace must persist and normally be shared between the login host and compute nodes. Real R14 acceptance demonstrated the failure mode cleanly: a `/tmp` Slurm smoke reached `succeeded`, but login-side log retrieval could not see compute-node-local stdout; repeating the same smoke under `/share/home/shark` closed the full submission/terminal/log loop.
 
+### R15 GUI layout polish note（2026-09-04）
+
+The Runs table header and body now share an explicit single-line visual contract. `cell_lines(1)` continues to bound body rows, while app-level column weights give `Continuation` a materially larger share of the default-width table instead of depending on WindUI's wrapping header label. The 1080×720 dashboard fixture is additionally probed in the `Continuation` header region and produces one contiguous text band rather than a wrapped second line.
+
+The Hosts page no longer receives a preformatted text blob. `runwatch-ssh` still owns OpenSSH parsing/`ssh -G`; the GUI receives a structured, read-only projection and never opens an SSH session just to draw cards. Card width is computed once for the whole inventory from the longest alias/endpoint/route, bounded so pathological configuration does not consume the entire window; the longest wrapped route similarly determines the common card height. All cards therefore stay equal width and equal height. A lightweight viewport-width signal only rebuilds the card wall when the computed layout changes, producing one column in narrow windows and progressively more columns as space becomes available.
+
+Debug/CI coverage now includes a dedicated `hosts` fixture. In addition to the standard 1080×720 render, Hosts is rendered at 760×720 and 1440×900 so responsive behavior cannot silently regress into a fixed-column layout.
+
 ### GUI 验收基线
 
 R13 GUI 改造至少需要以下门禁：
 
 - 0 / 1 / 50 / 500 Runs 的 projection 与列表排序/filter/search 测试；
-- 默认 1080×720 下每个 dashboard Run 行的所有文本列必须保持单行；超长 Updated/Continuation/Observation 等只能裁切，不能换行污染相邻行；
+- 默认 1080×720 下 dashboard 表头与每个 Run 行的所有文本列都必须保持单行；`Continuation` 等较长表头不得折行，超长 Updated/Continuation/Observation 行值只能裁切，不能换行污染相邻行；
 - Running + unreachable 必须显示“仍 Running，但 observation unhealthy”，不能降成 Unknown；
 - 同时多个 terminal transition 不丢通知；
 - daemon offline / reconnect / paused 的 dashboard 与 tray 状态一致；
 - Run detail 在 logs/artifacts/event IPC 失败时局部降级，主列表仍可用；
 - Cancel 必须 confirmation + terminal disabled + daemon-side cancel semantics；
 - needs_rebind 只显示 attention/instruction，GUI 无法直接伪造 rebind；
-- Hosts parse 失败显式可见，不静默变空；
+- Hosts parse 失败显式可见，不静默变空；成功时使用等宽等高 Host cards，公共尺寸由最长卡片内容决定，并随窗口可用宽度自动重排列数；
 - Window hide/show、tray、GUI/service autostart 仍保持现有语义；
 - Windows packaged interactive acceptance 必须在普通用户桌面会话里验证 Service disable/re-enable、跨 PT1M 不复活、Run drill-in/log/probe/cancel 与 WM_CLOSE hide；Task 若由 elevated 安装，普通用户仍必须具有管理该 registration 的权限；
 - 所有 GUI 启动/操作路径继续保证 Windows 无 console flash；
-- Windows CI 除 Rust test/package 外增加关键 GUI fixture 的 off-screen screenshot smoke，至少覆盖 Runs dashboard、Run detail、daemon offline 三种状态。
+- Windows CI 除 Rust test/package 外增加关键 GUI fixture 的 off-screen screenshot smoke，覆盖 Runs dashboard、Run detail、daemon offline、New Run 和 Hosts；Hosts 额外覆盖窄/默认/宽三种 viewport。
 
 ## MCP
 
