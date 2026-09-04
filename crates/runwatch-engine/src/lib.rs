@@ -556,6 +556,13 @@ pub async fn tick(store: &RunStore, pool: &HostPool) -> Result<TickReport> {
     tick_selected(store, pool, |_| true).await
 }
 
+pub async fn probe_run(store: &RunStore, pool: &HostPool, run_id: &str) -> Result<TickReport> {
+    if store.get(run_id)?.is_none() {
+        anyhow::bail!("unknown run {run_id}");
+    }
+    tick_selected(store, pool, |record| record.run_id == run_id).await
+}
+
 pub async fn tick_due(
     store: &RunStore,
     pool: &HostPool,

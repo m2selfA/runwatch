@@ -17,6 +17,7 @@ runwatch-engine.workspace = true
 runwatch-ssh.workspace = true
 chrono.workspace = true
 tokio.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 windui = "0.14"
 

@@ -10,8 +10,8 @@ use std::time::Duration;
 use crate::config::ensure_data_dir;
 use crate::types::{
     AgentInvocationRecord, AgentSessionRegistration, ClaimedDelivery, ContinuationBinding,
-    DeliveryPayload, DeliveryStatusSummary, ObservationRecord, RunAttemptRecord, RunRecord,
-    RunStatus,
+    DeliveryPayload, DeliveryStatusSummary, ObservationRecord, RunAttemptRecord,
+    RunContinuationStatus, RunEventRecord, RunRecord, RunStatus,
 };
 
 const SCHEMA_VERSION: i64 = 2;
@@ -371,6 +371,203 @@ impl RunStore {
             .optional()?;
         json.map(|json| serde_json::from_str(&json).context("parse continuation binding"))
             .transpose()
+    }
+
+    pub fn list_run_events(&self, run_id: &str, limit: usize) -> Result<Vec<RunEventRecord>> {
+        let conn = self.connect()?;
+        let exists = conn
+            .query_row("SELECT 1 FROM runs WHERE run_id=?1", [run_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            bail!("unknown run {run_id}");
+        }
+        let limit = limit.clamp(1, 200) as i64;
+        let mut stmt = conn.prepare(
+            "SELECT id, at, kind, payload_json FROM run_events
+             WHERE run_id=?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![run_id, limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, at, kind, payload_json) = row?;
+            out.push(RunEventRecord {
+                id,
+                run_id: run_id.to_string(),
+                at: parse_utc(&at)?,
+                kind,
+                payload: serde_json::from_str(&payload_json).context("parse run event payload")?,
+            });
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    pub fn get_run_continuation_status(&self, run_id: &str) -> Result<RunContinuationStatus> {
+        let conn = self.connect()?;
+        let exists = conn
+            .query_row("SELECT 1 FROM runs WHERE run_id=?1", [run_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            bail!("unknown run {run_id}");
+        }
+        let binding_json = conn
+            .query_row(
+                "SELECT payload_json FROM continuation_bindings WHERE run_id=?1",
+                [run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let binding = binding_json
+            .map(|json| {
+                serde_json::from_str::<ContinuationBinding>(&json)
+                    .context("parse continuation binding")
+            })
+            .transpose()?;
+        let mut status = RunContinuationStatus {
+            run_id: run_id.to_string(),
+            configured: binding.is_some(),
+            agent_kind: binding.as_ref().map(|value| value.agent_kind.clone()),
+            session_id: binding.as_ref().map(|value| value.session_id.clone()),
+            project_root: binding.as_ref().map(|value| value.project_root.clone()),
+            ..RunContinuationStatus::default()
+        };
+        let counts: (i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN state='pending' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='delivering' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='retrying' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='needs_rebind' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='delivered' THEN 1 ELSE 0 END), 0)
+             FROM deliveries WHERE run_id=?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        status.pending = counts.0.try_into().unwrap_or(u32::MAX);
+        status.delivering = counts.1.try_into().unwrap_or(u32::MAX);
+        status.retrying = counts.2.try_into().unwrap_or(u32::MAX);
+        status.needs_rebind = counts.3.try_into().unwrap_or(u32::MAX);
+        status.delivered = counts.4.try_into().unwrap_or(u32::MAX);
+        if let Some((state, last_error)) = conn
+            .query_row(
+                "SELECT state, last_error FROM deliveries WHERE run_id=?1 ORDER BY rowid DESC LIMIT 1",
+                [run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+        {
+            status.last_state = Some(state);
+            status.last_error = last_error;
+        }
+        Ok(status)
+    }
+
+    pub fn list_run_continuation_statuses(&self) -> Result<Vec<RunContinuationStatus>> {
+        let conn = self.connect()?;
+        let mut statuses = HashMap::<String, RunContinuationStatus>::new();
+
+        let mut binding_stmt =
+            conn.prepare("SELECT run_id, payload_json FROM continuation_bindings ORDER BY run_id")?;
+        let binding_rows = binding_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in binding_rows {
+            let (run_id, payload_json) = row?;
+            let binding: ContinuationBinding = serde_json::from_str(&payload_json)
+                .context("parse continuation binding for GUI projection")?;
+            statuses.insert(
+                run_id.clone(),
+                RunContinuationStatus {
+                    run_id,
+                    configured: true,
+                    agent_kind: Some(binding.agent_kind),
+                    session_id: Some(binding.session_id),
+                    project_root: Some(binding.project_root),
+                    ..RunContinuationStatus::default()
+                },
+            );
+        }
+
+        let mut count_stmt = conn.prepare(
+            "SELECT run_id,
+                COALESCE(SUM(CASE WHEN state='pending' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='delivering' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='retrying' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='needs_rebind' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state='delivered' THEN 1 ELSE 0 END), 0)
+             FROM deliveries GROUP BY run_id",
+        )?;
+        let count_rows = count_stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        for row in count_rows {
+            let (run_id, pending, delivering, retrying, needs_rebind, delivered) = row?;
+            let status = statuses
+                .entry(run_id.clone())
+                .or_insert_with(|| RunContinuationStatus {
+                    run_id,
+                    ..RunContinuationStatus::default()
+                });
+            status.pending = pending.try_into().unwrap_or(u32::MAX);
+            status.delivering = delivering.try_into().unwrap_or(u32::MAX);
+            status.retrying = retrying.try_into().unwrap_or(u32::MAX);
+            status.needs_rebind = needs_rebind.try_into().unwrap_or(u32::MAX);
+            status.delivered = delivered.try_into().unwrap_or(u32::MAX);
+        }
+
+        let mut latest_stmt = conn.prepare(
+            "SELECT d.run_id, d.state, d.last_error
+             FROM deliveries d
+             JOIN (
+                 SELECT run_id, MAX(rowid) AS max_rowid
+                 FROM deliveries GROUP BY run_id
+             ) latest ON d.rowid=latest.max_rowid",
+        )?;
+        let latest_rows = latest_stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in latest_rows {
+            let (run_id, state, last_error) = row?;
+            let status = statuses
+                .entry(run_id.clone())
+                .or_insert_with(|| RunContinuationStatus {
+                    run_id,
+                    ..RunContinuationStatus::default()
+                });
+            status.last_state = Some(state);
+            status.last_error = last_error;
+        }
+
+        let mut out: Vec<_> = statuses.into_values().collect();
+        out.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        Ok(out)
     }
 
     pub fn register_agent_session(
@@ -1380,6 +1577,128 @@ mod tests {
         let rows = store.list().expect("list");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, RunStatus::Running);
+        cleanup(&db);
+    }
+
+    #[test]
+    fn gui_read_models_are_bounded_and_do_not_expose_binding_paths() {
+        use crate::types::{
+            ContinuationBinding, DeliveryPayload, RemoteWorkspaceRef, RunAttemptRecord,
+            RunResources,
+        };
+
+        let (db, legacy) = test_paths("gui-read-models");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "gm00".into(),
+            cwd: "/share/project".into(),
+        };
+        let binding = ContinuationBinding {
+            agent_kind: "pi".into(),
+            session_id: "session-readable-id".into(),
+            session_file: Some("C:/private/pi/session.jsonl".into()),
+            origin_leaf_id: Some("private-origin-leaf".into()),
+            project_root: "C:/science".into(),
+            workspace: workspace.clone(),
+            adapter_path: Some("C:/private/pi-runs/extensions/runs/index.ts".into()),
+        };
+        let mut run = RunRecord::new("r-gui".into(), "gm00".into(), RunnerKind::Slurm);
+        run.status = RunStatus::Running;
+        run.workspace = Some(workspace.clone());
+        run.attempt_no = Some(1);
+        run.updated_at = now;
+        let attempt = RunAttemptRecord {
+            run_id: run.run_id.clone(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: "gm00".into(),
+            workdir: workspace.cwd.clone(),
+            command: "science --run".into(),
+            resources: RunResources::default(),
+            job_name: "science".into(),
+            job_id: Some("31842".into()),
+            script_path: "/share/project/.runwatch/r-gui/run.sh".into(),
+            stdout_path: "/share/project/.runwatch/r-gui/stdout.log".into(),
+            stderr_path: "/share/project/.runwatch/r-gui/stderr.log".into(),
+            terminal_path: "/share/project/.runwatch/r-gui/terminal.json".into(),
+            receipt_path: "/share/project/.runwatch/r-gui/receipt.json".into(),
+            status: RunStatus::Running,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, Some(&binding))
+                .unwrap()
+        );
+        for index in 0..250 {
+            let mut updated = run.clone();
+            updated.updated_at = now + ChronoDuration::seconds(index);
+            store
+                .persist_run_attempt_event(&updated, &attempt, &format!("gui_event_{index:03}"))
+                .unwrap();
+        }
+        let events = store.list_run_events(&run.run_id, usize::MAX).unwrap();
+        assert_eq!(events.len(), 200);
+        assert_eq!(events.first().unwrap().kind, "gui_event_050");
+        assert_eq!(events.last().unwrap().kind, "gui_event_249");
+        assert!(store.list_run_events("missing-run", 20).is_err());
+
+        let payload = DeliveryPayload {
+            delivery_id: "d-retry".into(),
+            run_id: run.run_id.clone(),
+            attempt_no: 1,
+            status: RunStatus::Succeeded,
+            job_id: Some("31842".into()),
+            workspace,
+            binding,
+            created_at: now,
+        };
+        let conn = store.connect().unwrap();
+        conn.execute(
+            "INSERT INTO deliveries(delivery_id, run_id, state, attempts, last_error, payload_json)
+             VALUES(?1, ?2, 'retrying', 1, 'provider retry', ?3)",
+            params![
+                payload.delivery_id,
+                payload.run_id,
+                serde_json::to_string(&payload).unwrap()
+            ],
+        )
+        .unwrap();
+        let mut blocked = payload.clone();
+        blocked.delivery_id = "d-rebind".into();
+        conn.execute(
+            "INSERT INTO deliveries(delivery_id, run_id, state, attempts, last_error, payload_json)
+             VALUES(?1, ?2, 'needs_rebind', 2, 'branch changed', ?3)",
+            params![
+                blocked.delivery_id,
+                blocked.run_id,
+                serde_json::to_string(&blocked).unwrap()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let status = store.get_run_continuation_status(&run.run_id).unwrap();
+        assert_eq!(status.run_id, run.run_id);
+        assert!(status.configured);
+        assert_eq!(status.agent_kind.as_deref(), Some("pi"));
+        assert_eq!(status.session_id.as_deref(), Some("session-readable-id"));
+        assert_eq!(status.retrying, 1);
+        assert_eq!(status.needs_rebind, 1);
+        assert_eq!(status.last_state.as_deref(), Some("needs_rebind"));
+        assert_eq!(status.last_error.as_deref(), Some("branch changed"));
+        let listed = store.list_run_continuation_statuses().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], status);
+        let encoded = serde_json::to_string(&status).unwrap();
+        assert!(!encoded.contains("session_file"));
+        assert!(!encoded.contains("private-origin-leaf"));
+        assert!(!encoded.contains("adapter_path"));
+        assert!(!encoded.contains("C:/private"));
+        assert!(store.get_run_continuation_status("missing-run").is_err());
         cleanup(&db);
     }
 

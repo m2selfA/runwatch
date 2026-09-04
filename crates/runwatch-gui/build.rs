@@ -12,7 +12,7 @@ fn main() {
         res.set_icon(ico_path.to_str().unwrap());
         res.set("FileDescription", "runwatch");
         res.set("ProductName", "runwatch");
-        res.set("FileVersion", "0.1.0");
+        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
         res.set("LegalCopyright", "MIT");
         if let Err(err) = res.compile() {
             println!("cargo:warning=winres failed: {err}");

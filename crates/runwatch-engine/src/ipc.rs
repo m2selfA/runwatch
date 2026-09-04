@@ -41,6 +41,8 @@ struct Request {
     #[serde(default)]
     run_id: Option<String>,
     #[serde(default)]
+    attempt_no: Option<u32>,
+    #[serde(default)]
     run: Option<RunRecord>,
     #[serde(default)]
     spec: Option<SubmitRunSpec>,
@@ -111,7 +113,7 @@ fn hello_response(id: String) -> Response {
             "service": "runwatchd",
             "storage": "sqlite-wal",
             "capabilities": [
-                "hello", "daemon_status", "set_paused", "list_runs", "get_run", "get_observation", "adopt_run_v1", "tick", "wait_run", "submit_run_v2", "logs", "artifacts", "cancel_run",
+                "hello", "daemon_status", "set_paused", "list_runs", "get_run", "get_observation", "get_attempt", "list_run_events", "get_continuation_status", "adopt_run_v1", "tick", "probe_run", "wait_run", "submit_run_v2", "logs", "artifacts", "cancel_run",
                 "register_agent_session", "release_agent_session",
                 "claim_deliveries", "delivery_status", "ack_delivery", "rebind_continuation",
                 "verify_offline_invocation", "offline_pi_continuation", "offline_codex_continuation"
@@ -142,11 +144,22 @@ fn handle_control_request(request: Request, store: &RunStore, paused: &AtomicBoo
             paused.store(value, Ordering::SeqCst);
             Response::ok(id, json!({ "paused": value }))
         }
-        "list_runs" => match (store.list(), store.list_observations()) {
-            (Ok(runs), Ok(observations)) => {
-                Response::ok(id, json!({ "runs": runs, "observations": observations }))
+        "list_runs" => match (
+            store.list(),
+            store.list_observations(),
+            store.list_run_continuation_statuses(),
+        ) {
+            (Ok(runs), Ok(observations), Ok(continuations)) => Response::ok(
+                id,
+                json!({
+                    "runs": runs,
+                    "observations": observations,
+                    "continuations": continuations,
+                }),
+            ),
+            (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => {
+                Response::error(id, err.to_string())
             }
-            (Err(err), _) | (_, Err(err)) => Response::error(id, err.to_string()),
         },
         "get_run" => {
             let Some(run_id) = request.run_id.clone() else {
@@ -185,6 +198,43 @@ fn handle_control_request(request: Request, store: &RunStore, paused: &AtomicBoo
                     None => Response::ok(id, json!({ "observation": null })),
                 },
                 Ok(None) => Response::error(id, format!("unknown run {run_id}")),
+                Err(err) => Response::error(id, err.to_string()),
+            }
+        }
+        "get_attempt" => {
+            let Some(run_id) = request.run_id.clone() else {
+                return Response::error(id, "get_attempt requires run_id");
+            };
+            match store.get(&run_id) {
+                Ok(Some(run)) => {
+                    let attempt_no = request.attempt_no.or(run.attempt_no);
+                    match attempt_no {
+                        Some(attempt_no) => match store.get_attempt(&run_id, attempt_no) {
+                            Ok(attempt) => Response::ok(id, json!({ "attempt": attempt })),
+                            Err(err) => Response::error(id, err.to_string()),
+                        },
+                        None => Response::ok(id, json!({ "attempt": null })),
+                    }
+                }
+                Ok(None) => Response::error(id, format!("unknown run {run_id}")),
+                Err(err) => Response::error(id, err.to_string()),
+            }
+        }
+        "list_run_events" => {
+            let Some(run_id) = request.run_id.clone() else {
+                return Response::error(id, "list_run_events requires run_id");
+            };
+            match store.list_run_events(&run_id, request.limit.unwrap_or(80)) {
+                Ok(events) => Response::ok(id, json!({ "events": events })),
+                Err(err) => Response::error(id, err.to_string()),
+            }
+        }
+        "get_continuation_status" => {
+            let Some(run_id) = request.run_id.clone() else {
+                return Response::error(id, "get_continuation_status requires run_id");
+            };
+            match store.get_run_continuation_status(&run_id) {
+                Ok(status) => Response::ok(id, json!({ "continuation": status })),
                 Err(err) => Response::error(id, err.to_string()),
             }
         }
@@ -358,6 +408,26 @@ async fn handle_request(
             ),
             Err(err) => Response::error(id, format!("{err:#}")),
         },
+        "probe_run" => {
+            let Some(run_id) = request.run_id else {
+                return Response::error(id, "probe_run requires run_id");
+            };
+            match crate::probe_run(store, pool, &run_id).await {
+                Ok(report) => Response::ok(
+                    id,
+                    json!({
+                        "run_id": run_id,
+                        "transitions": report.transitions.iter().map(|transition| json!({
+                            "run_id": transition.run_id,
+                            "from": transition.from,
+                            "to": transition.to,
+                        })).collect::<Vec<_>>(),
+                        "errors": report.errors,
+                    }),
+                ),
+                Err(err) => Response::error(id, format!("{err:#}")),
+            }
+        }
         "wait_run" => {
             let Some(run_id) = request.run_id else {
                 return Response::error(id, "wait_run requires run_id");
@@ -858,6 +928,21 @@ mod tests {
                 .iter()
                 .any(|value| value == "get_observation")
         );
+        for capability in [
+            "get_attempt",
+            "list_run_events",
+            "get_continuation_status",
+            "probe_run",
+        ] {
+            assert!(
+                result["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == capability),
+                "missing GUI read capability {capability}"
+            );
+        }
         assert!(
             result["capabilities"]
                 .as_array()

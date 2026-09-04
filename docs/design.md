@@ -387,11 +387,11 @@ State | Name | Runner | Host | Handle | Observation | Updated/Elapsed | Continua
 第一阶段控制面只开放能清楚解释且有 daemon authority 的动作：
 
 - `Refresh`：刷新 dashboard 本地快照；
-- `Probe now`：后续增加 daemon-owned 的单 Run 强制 observation refresh，不能让 GUI 自己 SSH；
+- `Probe now`：通过 daemon-owned `probe_run` 对单个 Run 强制 observation refresh，GUI 自己不建立 SSH；
 - `Copy Run ID / Job ID / Workspace`；
 - `Cancel Run`：仅非 terminal Run 可用，必须二次确认，并说明这是 cancel request，最终 Cancelled 仍由 observation 收敛；
 - `Pause / Resume polling`：属于 daemon 全局控制，若存在 live Runs 必须显示明显影响说明；
-- resident runtime / GUI autostart 的 enable/disable 继续放在 Service/Settings，不与单 Run 动作混在一起。
+- resident runtime enable/disable 放在 Service，GUI autostart 放在 Settings；两者都不与单 Run 动作混在一起。
 
 暂不加入：GUI retry/resubmit、任意 SSH shell、远端文件编辑、scheduler admin、agent branch rebind、Delivery 强制 ack。它们要么需要新的 product semantics，要么属于其它 authority plane。
 
@@ -448,7 +448,7 @@ get_run                   继续保留兼容
 list_run_events           新增：bounded recent Event timeline
 get_continuation_status   新增：Run-scoped binding/Delivery attention projection
 get_attempt               新增：当前/指定 Attempt metadata
-probe_run                 新增：daemon-owned explicit refresh（后续）
+probe_run                 新增：daemon-owned explicit single-Run refresh
 ```
 
 Dashboard 可以继续一次获取 `runs + observations`，但 GUI view-model 必须把 Run/Observation 关联起来；详情信息按选中 Run 懒加载，Logs/Artifacts 单独按需读取，避免每 2 秒把所有日志/事件一起拉回来。
@@ -478,6 +478,22 @@ runwatch-gui/
 只保留一个长期 background controller/runtime；UI action 通过 command channel 发送，不再像当前 Pause toggle 那样每次点击临时创建线程 + Tokio runtime。轮询产生 immutable-ish snapshot，再由 WindUI signals 更新动态列表/详情。
 
 WindUI 0.14 已具备 dynamic list、sortable table、tabs、dialog、segmented/nav、progress、clipboard 和 off-screen screenshot，先用现有框架完成上述 console；只有在真实实现中证明大数据表、动态 master-detail 或 accessibility 被框架卡住，才评估迁移，而不是因为 v0.1 UI 简陋就先换框架。
+
+### R13 implementation note（2026-09-04）
+
+The first Human Run Console implementation now follows the architecture above. `runwatch-gui` uses one long-lived controller/runtime; `ipc_client` is the only GUI daemon-access layer; `model` is a pure projection layer; `notifications` owns transition dedupe; and the Runs view uses a virtualized table plus lazy detail tabs. The daemon exposes additive bounded `get_attempt`, `list_run_events`, `get_continuation_status` and `probe_run` operations; `list_runs` keeps its existing `runs + observations` fields and adds a continuation sidecar rather than creating a GUI-only database path.
+
+`probe_run` is intentionally daemon-owned. It selects one Run for execution observation through the same engine/HostPool path as ordinary ticks; the GUI never creates an SSH connection. Existing daemon terminal-Delivery reconciliation still runs as canonical maintenance and is not a GUI-owned scheduler loop.
+
+The implemented dashboard keeps execution and observation independent, adds continuation/cancel attention, and supports Active/Attention/All filtering, search and explicit Priority/Newest/Name/Host ordering on a virtual table. Detail tabs keep Logs and Event history bounded (logs <=500 lines per request, recent events <=200) and localize partial failures. Continuation projection deliberately omits session files, origin-leaf IDs, adapter paths and lease/owner internals.
+
+Service authority is also kept separate from Settings: resident Task Scheduler/supervisor control belongs on Service and requires confirmation before disabling; Settings contains only desktop UX choices. Hosts remains a read-only OpenSSH projection plus live Run usage computed from daemon snapshots; merely opening the page does not connect to every Host.
+
+One concrete WindUI 0.14 limitation is now proven rather than hypothetical: its public tray API does not expose a runtime tray handle/tooltip mutation surface, and native `notify()` is available only inside tray callback context, not from the background controller/app-channel `EventCtx`. Therefore R13 does **not** duplicate a second tray icon or discover private Win32 handles merely to implement a dynamic tooltip/background native notification. Transition attention is currently represented by the dashboard plus in-app toasts; a clean upstream/public tray-notification bridge is the remaining R13d UI-framework item.
+
+Screenshot fixtures are a debug/CI surface only (`debug_assertions`). Release builds do not compile the `RUNWATCH_GUI_FIXTURE` trigger, so production cannot be switched to synthetic dashboard data by environment configuration.
+
+Independent review additionally tightened two asynchronous/error boundaries before 0.2.0 packaging: detail requests carry a generation and the controller aborts superseded loads, so slower A/B selections or older log-tail requests cannot overwrite the current detail; and Attempt/Timeline/Continuation read/parse failures render explicit local `unavailable` states rather than masquerading as absent canonical data. Because R13 changes runtime IPC plus the shipped GUI materially, current workspace/package identity is 0.2.0 while the historical v0.1.0 tag/evidence remains untouched.
 
 ### GUI 验收基线
 

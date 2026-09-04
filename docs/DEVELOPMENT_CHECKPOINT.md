@@ -52,7 +52,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R10 | Codex onboarding experiment | **frozen after R10b on 2026-09-02 — status/install/remove/doctor remain validated reference code; R10c and further Codex productization are deferred until after runwatch + pi-runs v1** |
 | R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
 | R12 | Post-v0.1 portability CI + GUI polish | **completed 2026-09-04 — Windows package CI + Linux glibc 2.17 artifact gate green; GUI `ssh -G` console flashing fixed** |
-| R13 | Human Run Console GUI redesign | **planned 2026-09-04 — information architecture and staged implementation plan frozen; runtime implementation pending** |
+| R13 | Human Run Console GUI redesign | **in progress 2026-09-04 — R13a/b/c/e implemented and regression-covered; R13d transition attention completed but dynamic tray/native background notification is blocked by WindUI 0.14 public API; R13f packaged interactive acceptance remains** |
 
 ## R0 completion record
 
@@ -705,71 +705,70 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 - [x] R12 is closed without changing the historical v0.1.0 release evidence: this phase adds post-release CI/portability and GUI polish while preserving runwatch's agent-neutral lifecycle authority.
 
 
-### R13 — Human Run Console GUI redesign — planned 2026-09-04
+### R13 — Human Run Console GUI redesign — implementation started 2026-09-04
 
-The current GUI is functionally too small for the now-mature runwatch runtime: it renders the entire Run set as one text label, has no selection/detail workflow, ignores the Observation sidecar already returned by `list_runs`, has no logs/artifacts/timeline/continuation inspection, and its terminal notification helper can surface only the first matching transition in one poll. The redesign therefore treats this as an information-architecture and client-projection problem, not a request to add more labels to the existing 640×480 window.
+The old 640×480 GUI was a validation shell: it rendered the entire Run set as one text label, had no selection/detail workflow, ignored the Observation sidecar, had no logs/artifacts/timeline/continuation inspection, and surfaced at most one terminal transition per poll. R13 keeps the frozen authority boundary but replaces that shell with a real Human Run Console.
 
-Community/UI research used for the redesign:
+Frozen R13 product boundary remains unchanged:
 
-- Docker Desktop's container model: searchable object list -> selected-object detail -> separate Logs/Inspect/Stats-style surfaces -> explicit lifecycle actions.
-- Open OnDemand Active Jobs: compact active-job list with expandable/detail information rather than exposing scheduler raw text as the primary UI.
-- WindUI 0.14 itself is not the blocker: current upstream supports dynamic lists, sortable tables, tabs, dialogs, segmented/nav controls, progress, clipboard and off-screen screenshots. Keep it for R13 unless implementation proves a concrete framework limitation.
+- GUI is a **pure runwatchd client**: no SQLite writer/reader shortcut, no HostPool/scheduler owner, no generic SSH workspace API and no agent continuation authority.
+- Execution state and Observation health remain separate dimensions. A Running Run with unreachable SSH remains Running + unhealthy observation.
+- Branch-safe Pi rebind remains in `pi-runs`; GUI only explains `needs_rebind` and never synthesizes a current Pi leaf/session identity.
 
-Frozen R13 product boundary:
+#### R13a — GUI foundation + shared read models — completed 2026-09-04
 
-- GUI becomes the **Human Run Console**, but remains a pure runwatchd client.
-- It must not open SQLite, own SSH pools, poll schedulers directly, edit remote files, invent a Host database, or become an agent continuation authority.
-- GUI may inspect canonical Run/Attempt/Observation/Event/Artifact/Continuation projections and request bounded daemon actions such as refresh/cancel/pause.
-- Branch-safe Pi rebind remains in `pi-runs`; GUI may show `needs_rebind` attention but cannot synthesize current Pi session/leaf identity.
+- [x] Split the monolithic GUI into `controller`, `ipc_client`, pure `model` projection, `notifications`, fixtures and `views` modules; UI rendering no longer owns daemon access logic.
+- [x] Replaced per-click thread/Tokio-runtime creation with one long-lived controller thread/runtime plus an unbounded UI command channel. Slow detail/log/cancel/probe operations run as child tasks so the 2-second dashboard refresh remains responsive.
+- [x] Added pure `DashboardSnapshot / RunRow / RunDetailView` projections. Attention explicitly preserves canonical execution status while independently representing observation health/staleness, continuation state and unresolved cancel.
+- [x] Added bounded additive daemon read models: `get_attempt`, `list_run_events` (hard clamp 1..200) and `get_continuation_status`; `list_runs` gained an additive `continuations` sidecar for dashboard efficiency while preserving existing `runs + observations` fields.
+- [x] Continuation projection is privacy-minimized: agent/session/project summary + Delivery counts/latest error only. Regression proves it does not expose `session_file`, origin leaf, adapter path or private binding paths.
+- [x] Added daemon-owned `probe_run` capability for an explicit single-Run execution refresh. GUI never opens SSH itself; unknown Run fails closed.
 
-#### R13a — GUI foundation + shared read models
+#### R13b — Runs dashboard — completed 2026-09-04
 
-- [ ] Split the monolithic `runwatch-gui/src/main.rs` into controller/IPC/view-model/projection/notifications/settings/views modules before expanding screens.
-- [ ] Replace per-click thread + Tokio-runtime creation with one long-lived controller/runtime and a UI action channel.
-- [ ] Build pure `GuiSnapshot`, `RunRow`, `RunDetail`, `RunAttention` projections so execution state and observation health cannot be conflated.
-- [ ] Add bounded, additive daemon read IPC needed by detail UI: recent Run events, Attempt metadata and Run-scoped continuation/Delivery status. Keep logs/artifacts lazy/on-demand.
-- [ ] Do not change existing `list_runs/get_run` compatibility contracts just to serve the GUI.
+- [x] Replaced text dump with a virtualized table suitable for 500+ Runs. Default columns: State / Name / Runner / Host / Handle / Observation / Continuation / Updated.
+- [x] Added `Active / Attention / All` filtering, search across name/Run ID/host/handle/workspace, and explicit `Priority / Newest / Name / Host` sorting while retaining Attention -> Active -> Recent as the default order.
+- [x] Dashboard summary now shows Active, Attention, recent terminal Runs in the last 24 hours, total Runs and daemon connection/version state.
+- [x] Observation remains a separate visible column; `Running + unreachable` regression is explicit and does not collapse execution to Unknown.
+- [x] Main window is now 1080×720, resizable, hide-on-close, tray-backed and still uses the cream/teal/amber visual system.
 
-#### R13b — Runs dashboard
+#### R13c — Run detail workspace — completed 2026-09-04
 
-- [ ] Replace the body text dump with dynamic/searchable/sortable Runs UI.
-- [ ] Default hierarchy: overall Active/Attention/Recent/Daemon summary -> `Active / Attention / All` filter -> Run table/list.
-- [ ] Default row data: State, human name, runner, host, durable handle, Observation health/age, elapsed/updated time, continuation attention.
-- [ ] Prioritize attention, then active, then recent terminal; preserve full Run ID as secondary detail.
-- [ ] Increase the default resizable working window to roughly 1080×720 while keeping hide-on-close/tray behavior.
+- [x] Added Overview / Logs / Artifacts / Timeline / Continuation tabs. Overview includes current Run/Attempt, bounded command text, resources, workspace/handle and observation source/health/reason/exit information.
+- [x] Logs remain daemon-bounded and lazy: 80/200/500-line choices, Reload, Copy and Wrap. A log failure degrades only the Logs tab.
+- [x] Artifacts remain lifecycle inventory only (script/stdout/stderr/terminal/receipt) with path-copy support; no remote file browser/editor was added.
+- [x] Timeline uses immutable `run_events` with bounded recent 80/200 loading; event payload rendering is also character-bounded.
+- [x] Continuation tab shows privacy-safe binding/Delivery summary and gives explicit `needs_rebind` instructions without a GUI rebind control.
+- [x] Safe actions are wired: Reload, daemon-owned Probe now, Copy Run ID/Handle/Workspace and confirmed Cancel. Cancel is described as a request; final Cancelled still follows durable observation.
 
-#### R13c — Run detail workspace
+#### R13d — Attention, tray and notifications — partially completed 2026-09-04
 
-- [ ] Overview tab: Run + current Attempt + command/resources + timestamps + Observation details.
-- [ ] Logs tab: bounded stdout/stderr tail with 80/200/500 line choices, Refresh/Copy/Wrap; local failure must not break dashboard state.
-- [ ] Artifacts tab: lifecycle inventory/path copy only; no generic remote file browser.
-- [ ] Timeline tab: bounded immutable run_events chronology with incremental loading.
-- [ ] Continuation tab: agent/session summary, Delivery state and actionable needs_rebind/retry information without exposing internal tokens or enabling unsafe GUI rebind.
-- [ ] Top-level safe actions: refresh/probe (daemon-owned), copy identities/workspace, and confirmed Cancel for non-terminal Runs.
+- [x] `RunAttention` derives from execution failure, probe-error/unreachable/stale observation, unresolved cancel and continuation retry/needs_rebind. Entering attention emits once; recovery rearms a later attention transition.
+- [x] Fixed the v0.1 `find_map()` loss: every Run that becomes terminal in one refresh cycle is recorded/notified, and initial historical terminal snapshots do not replay as fresh completion.
+- [x] Current GUI notifications are transition-driven in-app success/error toasts; refresh/heartbeat does not spam notices.
+- [ ] Dynamic tray tooltip and controller-originated native Windows notification remain blocked by WindUI 0.14's public API: runtime tray handles/tooltip mutation are not exposed, and `notify()` exists only in tray callback context. Do not duplicate a second tray icon or add a brittle Win32 handle-discovery hack merely to close this checkbox.
+- [ ] Persistent notification/display preferences may later add a disposable UX-only seen cursor; they must never become Run/Delivery authority.
 
-#### R13d — Attention, tray and notifications
+#### R13e — Hosts / Service / Settings — completed 2026-09-04
 
-- [ ] Derive attention from failure + observation health/staleness + unresolved cancel + continuation retry/needs_rebind + daemon/service health.
-- [ ] Fix the v0.1 one-transition notification loss: coalesce or enumerate multiple terminal transitions from the same refresh cycle.
-- [ ] Use state-transition notifications rather than heartbeat spam; failure/rebind/observation-loss receive stronger attention than normal success.
-- [ ] Tray tooltip/menu shows compact active/attention state so returning users immediately notice ongoing work.
-- [ ] Optional `last_seen_event`/notification preferences are UX-only disposable local state and never participate in Run/Delivery authority.
+- [x] Hosts page remains read-only over the existing OpenSSH configuration and shows alias/effective user/host/port/ProxyJump plus live Run usage counts derived from daemon snapshots. Opening Hosts does not connect to every Host.
+- [x] OpenSSH parse/effective-config errors are shown as configuration errors rather than silently becoming an empty Host list.
+- [x] Service page shows daemon version/protocol/capability count/PID/pause, resident registration state, GUI autostart and package sibling health.
+- [x] Resident runtime enable/disable uses the existing Task Scheduler/supervisor APIs on the background controller. Disabling requires an explicit main-window confirmation explaining that scientific Runs survive but observation/continuation stops until runwatchd returns.
+- [x] Tray may enable resident runtime, but attempting to disable from tray opens the Console/Service path instead of silently stopping observation.
+- [x] Settings is restored to the frozen authority boundary: only GUI startup and future notification/display UX belong there; resident service truth/control lives on Service.
 
-#### R13e — Hosts / Service / Settings
+#### R13f — usability/release qualification — implementation gates mostly green 2026-09-04
 
-- [ ] Hosts page remains a read-only projection of `~/.ssh/config`: alias/effective target/user/port/ProxyJump/usage; parse errors must be visible rather than silently becoming an empty list.
-- [ ] Any future Host connection diagnostic is explicit user action and uses the same runwatch-ssh fail-closed trust policy; opening the page must not log into every Host.
-- [ ] Service page shows daemon pid/version/protocol/pause, resident Task Scheduler/supervisor state, GUI autostart and package sibling health.
-- [ ] Disabling resident runtime with live Runs must explain that the scientific jobs survive but observation/continuation stops until runwatchd returns.
-- [ ] Settings owns only GUI UX preferences such as notifications/display; no scheduler/agent identity truth is stored there.
-
-#### R13f — usability/release qualification
-
-- [ ] Projection tests for empty/single/50/500 Run sets, filters/search/sort, stale/unreachable and attention priority.
-- [ ] Explicit regression: Running + unreachable stays Running and visually reports unhealthy Observation separately.
-- [ ] Daemon offline/reconnect/paused, multi-terminal notifications, logs/artifacts partial failure, needs_rebind, cancel confirmation and Host-parse error coverage.
-- [ ] WindUI off-screen screenshot smoke for at least Runs dashboard, Run detail and daemon-offline fixtures; keep the cream/teal/amber visual identity.
-- [ ] Real packaged Windows acceptance: no console flash, hide/show/tray, resident service controls, selected Run drill-in and bounded logs/cancel path.
+- [x] Projection coverage includes empty / 1 / 50 / 500 Runs, filters/search/sort, stale/unreachable, continuation attention, unresolved cancel and live Host usage.
+- [x] GUI unit regression is **13 passed / 0 failed**; final full workspace regression after independent review is **120 passed / 0 failed / 8 ignored**. `cargo check --all-targets` passes with only the pre-existing `russh 0.54.5` future-incompat warning.
+- [x] WindUI debug-only fixture mode renders Dashboard / Detail / Daemon-offline screenshots at **1080×720**. Latest smoke produced 49,114 / 48,204 / 49,927-byte PNGs with 15 / 15 / 17 sampled colors, ruling out empty-canvas success.
+- [x] Fixture mode is compiled only under `debug_assertions`; final isolated optimized **v0.2.0** GUI build is **6,452,736 bytes** and binary inspection confirms `RUNWATCH_GUI_FIXTURE` is absent.
+- [x] Rust-native Windows package builds successfully from an isolated target directory so a user-running GUI never needs to be killed. Final `xtask verify` is `ok=true`, files=5, version `0.2.0` for `runwatch-v0.2.0-windows-x86_64.zip`, **10,309,979 bytes**, SHA-256 `1851f9497ca190e48df29ea7276167c02141da3a945a21c8646e10a44879eedb`.
+- [x] Independent review found and fixed a real stale-detail race: a slow Run A/log-tail request could otherwise overwrite a newer Run B selection or newer tail request. Detail requests now carry a monotonically increasing generation, the controller aborts the previous detail task, and the view rejects stale/wrong-Run responses; regression covers both cross-Run and same-Run reload ordering.
+- [x] Independent review also removed a misleading partial-failure shape: Attempt/Timeline/Continuation IPC or parse failures are now shown explicitly as `... unavailable` instead of silently degrading to “no data”, while the rest of the detail workspace remains usable.
+- [x] R13 is substantial post-release runtime/UI work, so current workspace/package identity advanced to **0.2.0**. `runwatch-gui` PE `FileVersion` now derives from `CARGO_PKG_VERSION`. Historical `v0.1.0` tag, package hashes and endurance evidence above remain immutable and are not relabeled as 0.2.0 evidence.
+- [ ] Final real packaged interactive Windows acceptance remains: launch the new packaged GUI beside a resident daemon and exercise hide/show/tray, Service enable/disable confirmation, selected Run drill-in, bounded logs/probe and cancel-request UI without terminating the user's currently running older GUI instance.
 
 Deferred until the console is stable:
 

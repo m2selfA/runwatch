@@ -179,6 +179,37 @@ pub struct DeliveryStatusSummary {
     pub needs_rebind: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEventRecord {
+    pub id: i64,
+    pub run_id: String,
+    pub at: DateTime<Utc>,
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunContinuationStatus {
+    #[serde(default)]
+    pub run_id: String,
+    pub configured: bool,
+    #[serde(default)]
+    pub agent_kind: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub project_root: Option<String>,
+    pub pending: u32,
+    pub delivering: u32,
+    pub retrying: u32,
+    pub needs_rebind: u32,
+    pub delivered: u32,
+    #[serde(default)]
+    pub last_state: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInvocationRecord {
     pub invocation_id: String,
