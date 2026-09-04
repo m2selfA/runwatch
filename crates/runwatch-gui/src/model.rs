@@ -472,7 +472,10 @@ pub fn build_detail(
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let continuation_known_unbound = continuation_error.is_none() && !continuation.configured;
+    let run_carries_agent_identity =
+        run.session_id.is_some() || run.agent.is_some() || run.project_root.is_some();
+    let continuation_known_unbound =
+        continuation_error.is_none() && !continuation.configured && !run_carries_agent_identity;
     let current_attempt_no = run.attempt_no;
     let selected_is_current =
         selected_attempt_no.is_some() && selected_attempt_no == current_attempt_no;
@@ -502,6 +505,8 @@ pub fn build_detail(
         "Continuation status is unavailable; human Retry fails closed."
     } else if continuation.configured {
         "This Run is agent-bound; Retry is managed by the owning Agent Integration."
+    } else if run_carries_agent_identity {
+        "Run carries agent identity without a durable continuation binding; human Retry fails closed."
     } else if !matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
         "Human Retry is available only after the current Attempt is failed or cancelled."
     } else if retry_context.is_some() {
@@ -1064,6 +1069,28 @@ mod tests {
                 .overview
                 .contains("managed by the owning Agent Integration")
         );
+
+        let mut orphan_identity_run = run("r-retry-ui", RunStatus::Failed, now);
+        orphan_identity_run.session_id = Some("orphan-session".into());
+        orphan_identity_run.agent = Some("pi".into());
+        orphan_identity_run.project_root = Some("C:/science".into());
+        let orphan_identity = build_detail(
+            orphan_identity_run,
+            None,
+            Some(failed.clone()),
+            vec![failed.clone()],
+            Some(1),
+            None,
+            RunContinuationStatus::default(),
+            None,
+            vec![],
+            None,
+            String::new(),
+            String::new(),
+        );
+        assert!(orphan_identity.retry_context.is_none());
+        assert!(orphan_identity.overview.contains("agent identity"));
+        assert!(orphan_identity.overview.contains("fails closed"));
 
         let unknown_binding = build_detail(
             run("r-retry-ui", RunStatus::Failed, now),

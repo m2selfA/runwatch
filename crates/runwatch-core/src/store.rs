@@ -361,6 +361,12 @@ impl RunStore {
                 "retry_run_v1 currently requires an unbound Run; retry agent-bound workflows through the owning Agent Integration"
             );
         }
+        if current.session_id.is_some() || current.agent.is_some() || current.project_root.is_some()
+        {
+            bail!(
+                "retry_run_v1 refuses a Run that carries agent identity without a durable continuation binding; retry through the owning Agent Integration"
+            );
+        }
         let previous_json = tx
             .query_row(
                 "SELECT record_json FROM run_attempts WHERE run_id=?1 AND attempt_no=?2",
@@ -2461,6 +2467,102 @@ mod tests {
             .to_string();
         assert!(error.contains("requires an unbound Run"), "{error}");
         assert_eq!(store.list_attempts(&run.run_id).unwrap().len(), 1);
+        cleanup(&db);
+    }
+
+    #[test]
+    fn retry_intent_rejects_orphaned_agent_identity_without_binding() {
+        use crate::types::{RemoteWorkspaceRef, RetryRunSpec, RunResources};
+
+        let (db, legacy) = test_paths("retry-orphan-agent-identity");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "cluster".into(),
+            cwd: "/shared/project".into(),
+        };
+        let mut run = RunRecord::new(
+            "r-orphan-agent-retry".into(),
+            "cluster".into(),
+            RunnerKind::Slurm,
+        );
+        run.status = RunStatus::Failed;
+        run.workspace = Some(workspace.clone());
+        run.attempt_no = Some(1);
+        run.session_id = Some("orphan-session".into());
+        run.agent = Some("pi".into());
+        run.project_root = Some("C:/science".into());
+        run.updated_at = now;
+        let attempt = RunAttemptRecord {
+            run_id: run.run_id.clone(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: "cluster".into(),
+            workdir: workspace.cwd.clone(),
+            command: "python run.py".into(),
+            resources: RunResources::default(),
+            job_name: "rw-r-orphan-agent-retry-a1".into(),
+            job_id: Some("1003".into()),
+            script_path: "/shared/project/.runwatch/r-orphan-agent-retry/attempt-1/run.sh".into(),
+            stdout_path: "/shared/project/.runwatch/r-orphan-agent-retry/attempt-1/stdout.log"
+                .into(),
+            stderr_path: "/shared/project/.runwatch/r-orphan-agent-retry/attempt-1/stderr.log"
+                .into(),
+            terminal_path: "/shared/project/.runwatch/r-orphan-agent-retry/attempt-1/terminal.json"
+                .into(),
+            receipt_path:
+                "/shared/project/.runwatch/r-orphan-agent-retry/attempt-1/submission.receipt".into(),
+            status: RunStatus::Failed,
+            created_at: now,
+            updated_at: now,
+            error: Some("failed".into()),
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, None)
+                .unwrap()
+        );
+
+        let retry = RetryRunSpec {
+            run_id: run.run_id.clone(),
+            expected_attempt_no: 1,
+            request_id: "retry-orphan-agent-01".into(),
+            resources: None,
+        };
+        let mut desired_run = run.clone();
+        desired_run.attempt_no = Some(2);
+        desired_run.job_id = None;
+        desired_run.status = RunStatus::Submitting;
+        desired_run.session_id = None;
+        desired_run.agent = None;
+        desired_run.project_root = None;
+        desired_run.updated_at += ChronoDuration::seconds(1);
+        let mut desired_attempt = attempt.clone();
+        desired_attempt.attempt_no = 2;
+        desired_attempt.job_name = "rw-r-orphan-agent-retry-a2".into();
+        desired_attempt.job_id = None;
+        desired_attempt.status = RunStatus::Submitting;
+        desired_attempt.script_path =
+            "/shared/project/.runwatch/r-orphan-agent-retry/attempt-2/run.sh".into();
+        desired_attempt.stdout_path =
+            "/shared/project/.runwatch/r-orphan-agent-retry/attempt-2/stdout.log".into();
+        desired_attempt.stderr_path =
+            "/shared/project/.runwatch/r-orphan-agent-retry/attempt-2/stderr.log".into();
+        desired_attempt.terminal_path =
+            "/shared/project/.runwatch/r-orphan-agent-retry/attempt-2/terminal.json".into();
+        desired_attempt.receipt_path =
+            "/shared/project/.runwatch/r-orphan-agent-retry/attempt-2/submission.receipt".into();
+        desired_attempt.created_at = desired_run.updated_at;
+        desired_attempt.updated_at = desired_run.updated_at;
+        desired_attempt.error = None;
+
+        let error = store
+            .create_retry_intent(&retry, &desired_run, &desired_attempt)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("carries agent identity"), "{error}");
+        assert_eq!(store.list_attempts(&run.run_id).unwrap().len(), 1);
+        assert!(store.list_pending_retry_intents().unwrap().is_empty());
         cleanup(&db);
     }
 
