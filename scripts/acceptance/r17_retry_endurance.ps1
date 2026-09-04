@@ -154,12 +154,23 @@ function Wait-RunStatus(
     throw "Run $RunId did not reach $($Expected -join '/') within ${TimeoutSeconds}s"
 }
 
+function Invoke-SchtasksBestEffort([string[]]$TaskArgs) {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & schtasks.exe @TaskArgs *> $null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 function Stop-Resident($Context) {
     $supervisorPid = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
     if ($supervisorPid) {
         Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue
     }
-    & schtasks.exe /End /TN $Context.task_name 2>$null | Out-Null
+    [void](Invoke-SchtasksBestEffort @("/End", "/TN", $Context.task_name))
     for ($i = 0; $i -lt 100; $i++) {
         $servePid = Get-PidFromHeartbeat $Context.data_dir "serve.pid"
         $superPid = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
@@ -205,7 +216,7 @@ cd /d "$($Context.runtime_dir)"
 </Task>
 "@
     [IO.File]::WriteAllText($Context.xml_path, $xml, [Text.Encoding]::Unicode)
-    & schtasks.exe /Delete /TN $Context.task_name /F 2>$null | Out-Null
+    [void](Invoke-SchtasksBestEffort @("/Delete", "/TN", $Context.task_name, "/F"))
     & schtasks.exe /Create /TN $Context.task_name /XML $Context.xml_path /F | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "failed to create Task Scheduler task $($Context.task_name)" }
 }
@@ -231,7 +242,7 @@ function Start-Resident($Context) {
 
 function Remove-ResidentTask($Context) {
     try { Stop-Resident $Context } catch {}
-    & schtasks.exe /Delete /TN $Context.task_name /F 2>$null | Out-Null
+    [void](Invoke-SchtasksBestEffort @("/Delete", "/TN", $Context.task_name, "/F"))
 }
 
 function New-ResidentContext($State, [string]$SegmentId) {
