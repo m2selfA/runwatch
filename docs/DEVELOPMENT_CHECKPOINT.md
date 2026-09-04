@@ -884,3 +884,52 @@ Pi on Windows
 ```
 
 This functional loop is now release-qualified from the supported release/install layout and has survived the R11 endurance matrix plus final RC replay. The existing Codex loop remains valuable second-adapter evidence but is **not** part of the v0.1.0 release scope. No human should need to type “continue”.
+
+## R17 current work
+
+### R17 — Durable Multi-Attempt Lifecycle & Human Retry — started 2026-09-04
+
+R17 begins only after published v0.2.0 is frozen. The release tag stays immutable; all R17 work is post-v0.2 main development. Core contract: one logical Run may own multiple durable Attempts, old Attempt evidence is never overwritten, and retry allocation/submission remains daemon-owned.
+
+#### R17a — multi-Attempt read model + attempt-scoped evidence
+
+- [x] New executions use `attempt-N/` lifecycle directories; persisted v0.2 legacy paths remain readable without migration.
+- [x] Add ordered `list_attempts(run_id)` store/IPC read support.
+- [x] Make observation/log/artifact reads accept an explicit Attempt while preserving current-Attempt defaults for existing callers.
+- [x] GUI detail can inspect historical Attempts without changing Run authority; timeline remains Run-global.
+
+#### R17b — durable/idempotent Retry transaction
+
+- [x] Introduce `retry_run_v1` with `run_id`, `expected_attempt_no`, durable `request_id`, and optional reviewed resource envelope (`None` inherits the previous Attempt exactly).
+- [x] Allocate N+1 under one immediate SQLite transaction; one request ID can create at most one Attempt and stale expected Attempt values fail closed.
+- [x] `Submitting` ambiguous-reply recovery remains same-Attempt recovery and is never converted into Retry; persisted v0.2 lifecycle paths win when reconstructing an old ambiguous Attempt.
+- [x] Schema/write compatibility is explicit and migration-tested: schema 2 opens in place as schema 3 and gains `retry_intents` without rewriting Runs/Attempts.
+
+#### R17c — Retry execution
+
+- [x] Local Process, Slurm and LSF execute Attempt N+1 with new handle/JobID and preserve Attempt N logs/artifacts/terminal/observation.
+- [x] First Retry keeps Run command/workspace/runner/host identity fixed; only scheduler resource envelope may be adjusted.
+
+R17a-c focused validation is green after the resource-inheritance correction: `cargo fmt -- --check` and `cargo check --all-targets` pass; runwatch-core is **42 passed / 0 failed / 2 ignored** and runwatch-engine is **44 passed / 0 failed / 5 ignored**. Store regressions prove same-request idempotency, stale expected-Attempt rejection, agent-bound rejection and schema-2-to-3 opening. Scheduler/Local plan regressions prove new `attempt-N/` paths and v0.2 persisted-path recovery.
+
+Real R17c execution evidence uses isolated SQLite/named-pipe authorities. gm00 Slurm Run `r17-slurm-retry-smoke-01` created Job **31839** as Attempt 1 (1 CPU, intentional failure) and Job **31840** as Attempt 2 (2 CPUs, success); both post-submit and post-terminal replay of request `r17-slurm-retry-01` kept exactly two Attempts and preserved Attempt-1 stdout. gyz-mn02 LSF Run `r17-lsf-retry-smoke-01` created Jobs **79322 -> 79323**; Retry omitted `resources`, inherited the previous envelope exactly, preserved Attempt-1 logs and remained exactly two Attempts under replay. Local Process used the production resident topology in active RDP **Session 2** (`Task Scheduler unlimited/LeastPrivilege -> runwatch supervise -> serve`): supervisor and serve both reported SessionId=2; handles changed from `local:16276:01dd3c66e8b42484` to `local:102888:01dd3c66ea00d559`, Attempt 1 failed, Attempt 2 succeeded, old logs remained readable and request replay never created Attempt 3. All three Runs remained unbound. Temporary tasks, local test directories and remote `.runwatch` evidence directories were removed; the final cleanup audit reports zero matching R17 temp entries.
+
+#### R17d — Human Retry UX
+
+- [x] GUI shows Attempt history/selector and Attempt-scoped Observation / Logs / Artifacts while keeping Timeline Run-global.
+- [x] GUI Retry is limited to Failed/Cancelled **unbound** current Attempts, capability-gated by `retry_run_v1`, and performs explicit review/confirmation with command/workspace/runner/host read-only.
+- [x] Agent-bound Runs, historical Attempts and Runs whose continuation status cannot be read remain fail-closed for Human Retry; owning Agent Integration controls workflow retry policy.
+
+R17d focused GUI tests are **24 passed / 0 failed**. Retry review maps only scheduler resource fields, Local Process retry has no scheduler envelope, invalid counts fail preflight, and the GUI preserves one stable `request_id` across a failed retry submission until success. The dedicated `retry` 1080x720 software-render fixture is **72,451 bytes** and has **3,112** primary-accent pixels in the lower-right footer region (CI threshold 100), proving the visible `Retry Run` action is inside the default viewport. The fixture is part of the Windows CI render matrix.
+
+#### R17e — durability qualification
+
+- [x] Crash/restart gates cover retry-intent commit, scheduler/process launch, ambiguous scheduler response, and terminal convergence across real Slurm and Local Process execution.
+- [x] Prove one retry `request_id` -> one Attempt -> at most one scientific execution/JobID/handle across both scheduler and Local Process recovery.
+- [ ] Establish fresh endurance evidence before any production release containing the new Attempt writer.
+
+R17e now includes daemon-owned recovery for durable Retry intents that are still the current `Submitting` Attempt and have no handle. A real gm00 restart gate killed the isolated daemon after Attempt 2 was durably allocated but before any scheduler receipt existed; without client replay, the restarted daemon auto-submitted Job **31842**, converged success, preserved failed Attempt-1 Job **31841** logs, and retained exactly two Attempts / one retry intent / one Attempt-2 scheduler submission. A deterministic real Slurm ambiguous-return integration then submitted Attempt 2 exactly once, left SQLite intentionally at `Submitting / no JobID` after the remote receipt existed, reopened the same store, and replayed the production Retry pipeline: Attempt-1 Job **31845**, Attempt-2 Job **31846**, exactly two Attempts and **one scientific Attempt-2 execution** (`executions=1`). This proves the remote receipt guard survives the scheduler-accepted/local-response-lost crash boundary without a second `sbatch`.
+
+The corresponding real Local Process crash gate used the production Windows resident topology in active RDP **Session 2**. Attempt 1 failed under handle `local:94800:01dd3c6d6d92caee`; the resident was then stopped and an ignored acceptance seed invoked the production `create_retry_intent` transaction while the daemon was offline, proving `Attempt 2 / Submitting / handle=NONE`. Restarting the same unlimited LeastPrivilege Task Scheduler -> `runwatch supervise` chain produced new supervisor/serve PIDs **45956/105692** and auto-launched exactly one Attempt-2 scientific process under handle `local:98204:01dd3c6d7314a8bc`. It succeeded with old Attempt-1 logs intact; replay of the same request ID kept exactly two Attempts and the Attempt-2 execution marker had exactly one line.
+
+The formal R17 writer-endurance harness is now tracked as `scripts/acceptance/r17_retry_endurance.ps1`. Its frozen qualification contract is **7200 s clean active / >=10 rounds / mixed Local+Slurm**, with every round exercising failed Attempt 1 -> successful Retry Attempt 2, production resident crash/restart while both retries are active, same-request replay after restart and after terminal, exactly two Attempts, stable JobID/handle, preserved Attempt-1 logs and one scientific Attempt-2 execution marker per runner. Authority state under ignored `dist/r17-endurance/` freezes git/runtime/driver hashes plus workload parameters; an interrupted or failed segment is permanently dirty/non-resumable. Windows CI parses the driver AST, but the real external endurance remains an explicit acceptance gate. No formal authority is credited until it starts from the committed clean R17 tree and frozen release runtime.

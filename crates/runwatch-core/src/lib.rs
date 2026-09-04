@@ -16,6 +16,6 @@ pub use store::RunStore;
 pub use types::{
     AgentInvocationRecord, AgentSessionRegistration, ClaimedDelivery, ContinuationBinding,
     DeliveryPayload, DeliveryStatusSummary, ObservationHealth, ObservationRecord,
-    ObservationSource, RemoteWorkspaceRef, RunAttemptRecord, RunContinuationStatus, RunEventRecord,
-    RunRecord, RunResources, RunStatus, RunnerKind, SubmitRunSpec,
+    ObservationSource, RemoteWorkspaceRef, RetryRunSpec, RunAttemptRecord, RunContinuationStatus,
+    RunEventRecord, RunRecord, RunResources, RunStatus, RunnerKind, SubmitRunSpec,
 };

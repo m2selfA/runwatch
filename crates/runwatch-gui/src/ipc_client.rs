@@ -1,8 +1,8 @@
 use crate::model::{HostCardView, RunDetailView, build_detail};
 use anyhow::{Context, Result, anyhow};
 use runwatch_core::{
-    ObservationRecord, RunAttemptRecord, RunContinuationStatus, RunEventRecord, RunRecord,
-    SubmitRunSpec,
+    ObservationRecord, RetryRunSpec, RunAttemptRecord, RunContinuationStatus, RunEventRecord,
+    RunRecord, SubmitRunSpec,
 };
 use serde_json::{Value, json};
 
@@ -13,6 +13,7 @@ pub struct SnapshotPayload {
     pub pid: u64,
     pub paused: bool,
     pub manual_submit_supported: bool,
+    pub retry_supported: bool,
     pub runs: Vec<RunRecord>,
     pub observations: Vec<ObservationRecord>,
     pub continuations: Vec<RunContinuationStatus>,
@@ -31,6 +32,11 @@ pub async fn snapshot() -> Result<SnapshotPayload> {
             .iter()
             .any(|value| value.as_str() == Some("submit_run_v2"))
     });
+    let retry_supported = capabilities.is_some_and(|values| {
+        values
+            .iter()
+            .any(|value| value.as_str() == Some("retry_run_v1"))
+    });
     Ok(SnapshotPayload {
         version: hello
             .get("version")
@@ -48,6 +54,7 @@ pub async fn snapshot() -> Result<SnapshotPayload> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         manual_submit_supported,
+        retry_supported,
         runs: parse_field(&rows, "runs")?,
         observations: parse_field(&rows, "observations")?,
         continuations: rows
@@ -68,6 +75,11 @@ pub async fn submit_manual(spec: SubmitRunSpec) -> Result<RunRecord> {
     parse_field(&value, "run")
 }
 
+pub async fn retry_run(retry: RetryRunSpec) -> Result<RunRecord> {
+    let value = runwatch_engine::ipc::call_local("retry_run_v1", json!({ "retry": retry })).await?;
+    parse_field(&value, "run")
+}
+
 pub async fn cancel_run(run_id: &str) -> Result<()> {
     runwatch_engine::ipc::call_local("cancel_run", json!({ "run_id": run_id })).await?;
     Ok(())
@@ -82,7 +94,12 @@ pub async fn probe_run(run_id: &str) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
-pub async fn load_detail(run_id: &str, tail: usize, event_limit: usize) -> Result<RunDetailView> {
+pub async fn load_detail(
+    run_id: &str,
+    requested_attempt_no: Option<u32>,
+    tail: usize,
+    event_limit: usize,
+) -> Result<RunDetailView> {
     let run_value =
         runwatch_engine::ipc::call_local("get_run", json!({ "run_id": run_id })).await?;
     let run: RunRecord = run_value
@@ -91,16 +108,20 @@ pub async fn load_detail(run_id: &str, tail: usize, event_limit: usize) -> Resul
         .filter(|value| !value.is_null())
         .ok_or_else(|| anyhow!("unknown run {run_id}"))
         .and_then(|value| serde_json::from_value(value).context("parse Run detail"))?;
-    let observation: Option<ObservationRecord> = run_value
-        .get("observation")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .context("parse Run observation")?
-        .flatten();
-
-    let (attempt_result, continuation_result, events_result, logs_result, artifacts_result) = tokio::join!(
-        runwatch_engine::ipc::call_local("get_attempt", json!({ "run_id": run_id })),
+    let selected_attempt_no = requested_attempt_no.or(run.attempt_no);
+    let attempt_payload = json!({ "run_id": run_id, "attempt_no": selected_attempt_no });
+    let (
+        attempts_result,
+        observation_result,
+        attempt_result,
+        continuation_result,
+        events_result,
+        logs_result,
+        artifacts_result,
+    ) = tokio::join!(
+        runwatch_engine::ipc::call_local("list_attempts", json!({ "run_id": run_id })),
+        runwatch_engine::ipc::call_local("get_observation", attempt_payload.clone()),
+        runwatch_engine::ipc::call_local("get_attempt", attempt_payload.clone()),
         runwatch_engine::ipc::call_local("get_continuation_status", json!({ "run_id": run_id })),
         runwatch_engine::ipc::call_local(
             "list_run_events",
@@ -108,10 +129,21 @@ pub async fn load_detail(run_id: &str, tail: usize, event_limit: usize) -> Resul
         ),
         runwatch_engine::ipc::call_local(
             "logs",
-            json!({ "run_id": run_id, "tail": tail.clamp(1, 500) })
+            json!({ "run_id": run_id, "attempt_no": selected_attempt_no, "tail": tail.clamp(1, 500) })
         ),
-        runwatch_engine::ipc::call_local("artifacts", json!({ "run_id": run_id })),
+        runwatch_engine::ipc::call_local(
+            "artifacts",
+            json!({ "run_id": run_id, "attempt_no": selected_attempt_no })
+        ),
     );
+    let attempts = attempts_result
+        .and_then(|value| parse_field::<Vec<RunAttemptRecord>>(&value, "attempts"))
+        .unwrap_or_default();
+    let observation = match observation_result {
+        Ok(value) => parse_optional_field::<ObservationRecord>(&value, "observation")
+            .context("parse selected Run observation")?,
+        Err(_) => None,
+    };
 
     let (attempt, attempt_error) = match attempt_result {
         Ok(value) => match parse_optional_field::<RunAttemptRecord>(&value, "attempt") {
@@ -146,6 +178,8 @@ pub async fn load_detail(run_id: &str, tail: usize, event_limit: usize) -> Resul
         run,
         observation,
         attempt,
+        attempts,
+        selected_attempt_no,
         attempt_error,
         continuation,
         continuation_error,

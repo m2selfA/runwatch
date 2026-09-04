@@ -106,6 +106,30 @@ fn main() {
                     );
                 }
             },
+            UiEvent::RetryResult { run_id, result } => match result {
+                Ok(()) => {
+                    runs_state.retry_succeeded();
+                    show_notice(
+                        ctx,
+                        Notice {
+                            kind: NoticeKind::Success,
+                            title: "Run retry submitted".into(),
+                            body: format!("{run_id}; runwatchd durably owns the new Attempt"),
+                        },
+                    );
+                }
+                Err(error) => {
+                    runs_state.retry_failed(error.clone());
+                    show_notice(
+                        ctx,
+                        Notice {
+                            kind: NoticeKind::Attention,
+                            title: "Run retry failed".into(),
+                            body: error,
+                        },
+                    );
+                }
+            },
             UiEvent::Hosts(result) => hosts_state.apply_hosts(result),
             UiEvent::AutostartState {
                 daemon_enabled,
@@ -123,7 +147,7 @@ fn main() {
     #[cfg(debug_assertions)]
     let commands = if let Ok(name) = std::env::var("RUNWATCH_GUI_FIXTURE") {
         let fixture = fixtures::named(&name).unwrap_or_else(|| {
-            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, new-run, or hosts")
+            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, new-run, retry, or hosts")
         });
         pause_ui.set(fixture.snapshot.paused);
         selected_tab.set(fixture.selected_tab);
@@ -136,6 +160,9 @@ fn main() {
         }
         if fixture.open_create_dialog {
             runs_state.apply_fixture_create_dialog();
+        }
+        if fixture.open_retry_dialog {
+            runs_state.apply_fixture_retry_dialog();
         }
         if let Some(error) = fixture.offline_error {
             runs_state.daemon_unavailable(error);

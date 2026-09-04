@@ -48,6 +48,16 @@ jobs:
         run: cargo check --all-targets
       - name: Run tests
         run: cargo test --all-targets
+      - name: Parse R17 endurance driver
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/acceptance/r17_retry_endurance.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Host ("$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber) $($_.Message)") }
+            throw "R17 endurance driver has $($errors.Count) PowerShell parse error(s)"
+          }
       - name: Render critical GUI fixtures
         shell: pwsh
         run: |
@@ -74,7 +84,7 @@ jobs:
               $image.Dispose()
             }
           }
-          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'hosts')) {
+          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'retry', 'hosts')) {
             Render-Fixture $fixture 1080 720 $fixture
           }
           # A successful PNG alone is not enough for the tall scheduler form: the
@@ -99,6 +109,26 @@ jobs:
             }
           } finally {
             $newRunImage.Dispose()
+          }
+          # Retry review has its own pinned primary action. Require the action to remain
+          # visibly inside the default viewport, not merely present in the element tree.
+          $retryPng = Join-Path $fixtureDir 'retry.png'
+          $retryImage = [System.Drawing.Bitmap]::FromFile($retryPng)
+          try {
+            $retryAccentPixels = 0
+            for ($y = 540; $y -lt [Math]::Min(710, $retryImage.Height); $y++) {
+              for ($x = 600; $x -lt [Math]::Min(980, $retryImage.Width); $x++) {
+                $pixel = $retryImage.GetPixel($x, $y)
+                if ($pixel.R -eq 76 -and $pixel.G -eq 139 -and $pixel.B -eq 245) {
+                  $retryAccentPixels++
+                }
+              }
+            }
+            if ($retryAccentPixels -lt 100) {
+              throw "Retry Run primary footer action is clipped at 1080x720 ($retryAccentPixels accent pixels)"
+            }
+          } finally {
+            $retryImage.Dispose()
           }
           Render-Fixture 'hosts' 760 720 'hosts-narrow'
           Render-Fixture 'hosts' 1440 900 'hosts-wide'

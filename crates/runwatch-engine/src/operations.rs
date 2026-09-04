@@ -52,19 +52,23 @@ fn attempt_artifacts(attempt: &runwatch_core::RunAttemptRecord) -> Vec<RunArtifa
     .collect()
 }
 
-pub fn artifacts_run(store: &RunStore, run_id: &str) -> Result<RunArtifacts> {
+pub fn artifacts_run(
+    store: &RunStore,
+    run_id: &str,
+    requested_attempt_no: Option<u32>,
+) -> Result<RunArtifacts> {
     let run = store
         .get(run_id)?
         .with_context(|| format!("unknown run {run_id}"))?;
-    let attempt_no = run
-        .attempt_no
+    let attempt_no = requested_attempt_no
+        .or(run.attempt_no)
         .context("Run has no durable attempt metadata yet")?;
     let attempt = store
         .get_attempt(run_id, attempt_no)?
-        .context("Run attempt metadata is missing")?;
+        .with_context(|| format!("Run attempt {attempt_no} metadata is missing"))?;
     Ok(RunArtifacts {
         run_id: run.run_id,
-        status: run.status,
+        status: attempt.status,
         attempt_no,
         artifacts: attempt_artifacts(&attempt),
     })
@@ -134,32 +138,33 @@ pub async fn logs_run(
     store: &RunStore,
     pool: &HostPool,
     run_id: &str,
+    requested_attempt_no: Option<u32>,
     tail: Option<usize>,
 ) -> Result<RunLogs> {
     let run = store
         .get(run_id)?
         .with_context(|| format!("unknown run {run_id}"))?;
-    let attempt_no = run
-        .attempt_no
+    let attempt_no = requested_attempt_no
+        .or(run.attempt_no)
         .context("Run has no durable attempt metadata yet")?;
     let attempt = store
         .get_attempt(run_id, attempt_no)?
-        .context("Run attempt metadata is missing")?;
+        .with_context(|| format!("Run attempt {attempt_no} metadata is missing"))?;
     let tail_lines = bounded_tail_lines(tail);
-    let (stdout, stderr) = if run.runner == RunnerKind::Process {
+    let (stdout, stderr) = if attempt.runner == RunnerKind::Process {
         (
             read_local_tail(&attempt.stdout_path, tail_lines)?,
             read_local_tail(&attempt.stderr_path, tail_lines)?,
         )
     } else {
         (
-            read_remote_tail(pool, &run.host, &attempt.stdout_path, tail_lines).await?,
-            read_remote_tail(pool, &run.host, &attempt.stderr_path, tail_lines).await?,
+            read_remote_tail(pool, &attempt.host, &attempt.stdout_path, tail_lines).await?,
+            read_remote_tail(pool, &attempt.host, &attempt.stderr_path, tail_lines).await?,
         )
     };
     Ok(RunLogs {
         run_id: run.run_id,
-        status: run.status,
+        status: attempt.status,
         attempt_no,
         stdout,
         stderr,

@@ -1,9 +1,10 @@
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
-use runwatch_core::{RemoteWorkspaceRef, RunResources, RunnerKind, SubmitRunSpec};
+use runwatch_core::{RemoteWorkspaceRef, RetryRunSpec, RunResources, RunnerKind, SubmitRunSpec};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static MANUAL_NONCE: AtomicU32 = AtomicU32::new(1);
+static RETRY_NONCE: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManualRunner {
@@ -115,6 +116,66 @@ impl ManualRunDraft {
             continuation: None,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryDraft {
+    pub run_id: String,
+    pub expected_attempt_no: u32,
+    pub request_id: String,
+    pub time: String,
+    pub pool: String,
+    pub account: String,
+    pub cpus: String,
+    pub mem: String,
+    pub gpus: String,
+}
+
+impl RetryDraft {
+    pub fn build_spec(&self, runner: RunnerKind) -> Result<RetryRunSpec> {
+        if self.run_id.trim().is_empty() || self.expected_attempt_no == 0 {
+            bail!("Retry requires a current durable Attempt");
+        }
+        if self.request_id.trim().is_empty() {
+            bail!("Retry request identity is missing; reopen the Retry review");
+        }
+        let resources = match runner {
+            RunnerKind::Process => None,
+            RunnerKind::Slurm | RunnerKind::Lsf => {
+                let pool = optional(&self.pool);
+                Some(RunResources {
+                    time: optional(&self.time),
+                    partition: (runner == RunnerKind::Slurm)
+                        .then_some(pool.clone())
+                        .flatten(),
+                    queue: (runner == RunnerKind::Lsf).then_some(pool).flatten(),
+                    account: optional(&self.account),
+                    cpus: positive_u32("CPU count", &self.cpus)?,
+                    mem: optional(&self.mem),
+                    gpus: positive_u32("GPU count", &self.gpus)?,
+                })
+            }
+            other => bail!("Retry review does not support runner {other:?}"),
+        };
+        Ok(RetryRunSpec {
+            run_id: self.run_id.clone(),
+            expected_attempt_no: self.expected_attempt_no,
+            request_id: self.request_id.clone(),
+            resources,
+        })
+    }
+}
+
+pub fn new_retry_request_id() -> String {
+    let now = Utc::now();
+    let salt = RETRY_NONCE.fetch_add(1, Ordering::Relaxed)
+        ^ std::process::id()
+        ^ now.timestamp_subsec_nanos();
+    format!(
+        "gui-retry-{}-{:06x}",
+        now.format("%Y%m%d-%H%M%S"),
+        salt & 0x00ff_ffff
+    )
 }
 
 fn optional(value: &str) -> Option<String> {
@@ -288,6 +349,68 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("CPU count"));
+    }
+
+    #[test]
+    fn retry_review_maps_resources_and_local_retry_has_no_scheduler_envelope() {
+        let draft = RetryDraft {
+            run_id: "manual-r1".into(),
+            expected_attempt_no: 2,
+            request_id: "gui-retry-fixed-01".into(),
+            time: "04:00:00".into(),
+            pool: "gpu".into(),
+            account: "science".into(),
+            cpus: "16".into(),
+            mem: "64G".into(),
+            gpus: "2".into(),
+        };
+        let slurm = draft.build_spec(RunnerKind::Slurm).unwrap();
+        let resources = slurm.resources.unwrap();
+        assert_eq!(resources.partition.as_deref(), Some("gpu"));
+        assert_eq!(resources.queue, None);
+        assert_eq!(resources.cpus, Some(16));
+        assert_eq!(resources.gpus, Some(2));
+        assert_eq!(resources.mem.as_deref(), Some("64G"));
+
+        let lsf = draft.build_spec(RunnerKind::Lsf).unwrap();
+        let resources = lsf.resources.unwrap();
+        assert_eq!(resources.partition, None);
+        assert_eq!(resources.queue.as_deref(), Some("gpu"));
+
+        let local = draft.build_spec(RunnerKind::Process).unwrap();
+        assert_eq!(local.resources, None);
+        assert_eq!(local.request_id, "gui-retry-fixed-01");
+        assert_eq!(local.expected_attempt_no, 2);
+    }
+
+    #[test]
+    fn retry_review_rejects_invalid_counts_and_generates_wire_safe_request_ids() {
+        let draft = RetryDraft {
+            run_id: "manual-r1".into(),
+            expected_attempt_no: 1,
+            request_id: "gui-retry-fixed-02".into(),
+            time: String::new(),
+            pool: String::new(),
+            account: String::new(),
+            cpus: "0".into(),
+            mem: String::new(),
+            gpus: String::new(),
+        };
+        assert!(
+            draft
+                .build_spec(RunnerKind::Slurm)
+                .unwrap_err()
+                .to_string()
+                .contains("greater than zero")
+        );
+
+        let id = new_retry_request_id();
+        assert!(id.starts_with("gui-retry-"));
+        assert!(id.len() <= 96);
+        assert!(
+            id.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        );
     }
 
     #[test]

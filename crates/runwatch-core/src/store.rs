@@ -10,11 +10,11 @@ use std::time::Duration;
 use crate::config::ensure_data_dir;
 use crate::types::{
     AgentInvocationRecord, AgentSessionRegistration, ClaimedDelivery, ContinuationBinding,
-    DeliveryPayload, DeliveryStatusSummary, ObservationRecord, RunAttemptRecord,
+    DeliveryPayload, DeliveryStatusSummary, ObservationRecord, RetryRunSpec, RunAttemptRecord,
     RunContinuationStatus, RunEventRecord, RunRecord, RunStatus,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct RunStore {
     path: PathBuf,
@@ -74,6 +74,15 @@ impl RunStore {
                 attempt_no INTEGER NOT NULL,
                 record_json TEXT NOT NULL,
                 PRIMARY KEY (run_id, attempt_no)
+            );
+            CREATE TABLE IF NOT EXISTS retry_intents (
+                run_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (run_id, request_id),
+                UNIQUE (run_id, attempt_no)
             );
             CREATE TABLE IF NOT EXISTS run_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -277,6 +286,185 @@ impl RunStore {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    pub fn create_retry_intent(
+        &self,
+        spec: &RetryRunSpec,
+        run: &RunRecord,
+        attempt: &RunAttemptRecord,
+    ) -> Result<bool> {
+        let next_attempt_no = spec
+            .expected_attempt_no
+            .checked_add(1)
+            .context("retry attempt number overflow")?;
+        if attempt.run_id != spec.run_id || attempt.attempt_no != next_attempt_no {
+            bail!("retry Attempt identity does not match request");
+        }
+        if run.run_id != spec.run_id
+            || run.attempt_no != Some(next_attempt_no)
+            || run.status != RunStatus::Submitting
+            || run.job_id.is_some()
+        {
+            bail!("retry Run intent is not a clean submitting N+1 snapshot");
+        }
+
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((existing_attempt_no, payload_json)) = tx
+            .query_row(
+                "SELECT attempt_no, payload_json FROM retry_intents WHERE run_id=?1 AND request_id=?2",
+                params![spec.run_id, spec.request_id],
+                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            let existing: RetryRunSpec =
+                serde_json::from_str(&payload_json).context("parse durable retry intent")?;
+            if existing != *spec || existing_attempt_no != next_attempt_no {
+                bail!("retry request_id already exists with a different request");
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        let current_json = tx
+            .query_row(
+                "SELECT record_json FROM runs WHERE run_id=?1",
+                [spec.run_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .with_context(|| format!("unknown run {}", spec.run_id))?;
+        let current: RunRecord =
+            serde_json::from_str(&current_json).context("parse current Run for retry")?;
+        if current.attempt_no != Some(spec.expected_attempt_no) {
+            bail!(
+                "retry expected attempt {} but Run is at {:?}",
+                spec.expected_attempt_no,
+                current.attempt_no
+            );
+        }
+        if !matches!(current.status, RunStatus::Failed | RunStatus::Cancelled) {
+            bail!("retry requires the current Run to be failed or cancelled");
+        }
+        let bound = tx
+            .query_row(
+                "SELECT 1 FROM continuation_bindings WHERE run_id=?1",
+                [spec.run_id.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if bound {
+            bail!(
+                "retry_run_v1 currently requires an unbound Run; retry agent-bound workflows through the owning Agent Integration"
+            );
+        }
+        let previous_json = tx
+            .query_row(
+                "SELECT record_json FROM run_attempts WHERE run_id=?1 AND attempt_no=?2",
+                params![spec.run_id, spec.expected_attempt_no],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .context("current Run is missing its durable Attempt")?;
+        let previous: RunAttemptRecord =
+            serde_json::from_str(&previous_json).context("parse previous Attempt for retry")?;
+        if !matches!(previous.status, RunStatus::Failed | RunStatus::Cancelled) {
+            bail!("retry requires the current Attempt to be failed or cancelled");
+        }
+        let expected_resources = spec.resources.as_ref().unwrap_or(&previous.resources);
+        if attempt.runner != previous.runner
+            || attempt.host != previous.host
+            || attempt.workdir != previous.workdir
+            || attempt.command != previous.command
+            || &attempt.resources != expected_resources
+            || attempt.job_id.is_some()
+            || attempt.status != RunStatus::Submitting
+        {
+            bail!("retry Attempt changed immutable execution identity or resource request");
+        }
+        if run.runner != current.runner
+            || run.host != current.host
+            || run.workspace != current.workspace
+            || run.name != current.name
+            || run.session_id.is_some()
+            || run.agent.is_some()
+            || run.project_root.is_some()
+        {
+            bail!("retry Run changed immutable logical identity");
+        }
+
+        tx.execute(
+            "INSERT INTO run_attempts(run_id, attempt_no, record_json) VALUES(?1, ?2, ?3)",
+            params![
+                attempt.run_id,
+                attempt.attempt_no,
+                serde_json::to_string(attempt)?
+            ],
+        )?;
+        tx.execute(
+            "UPDATE runs SET record_json=?2, updated_at=?3 WHERE run_id=?1",
+            params![
+                run.run_id,
+                serde_json::to_string(run)?,
+                run.updated_at.to_rfc3339()
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO retry_intents(run_id, request_id, attempt_no, created_at, payload_json)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                spec.run_id,
+                spec.request_id,
+                next_attempt_no,
+                run.updated_at.to_rfc3339(),
+                serde_json::to_string(spec)?
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO run_events(run_id, at, kind, payload_json)
+             VALUES(?1, ?2, 'retry_intent', ?3)",
+            params![
+                run.run_id,
+                run.updated_at.to_rfc3339(),
+                serde_json::to_string(&serde_json::json!({
+                    "request_id": spec.request_id,
+                    "from_attempt_no": spec.expected_attempt_no,
+                    "attempt_no": next_attempt_no,
+                    "resources": spec.resources,
+                }))?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn list_pending_retry_intents(&self) -> Result<Vec<RetryRunSpec>> {
+        let conn = self.connect()?;
+        // This runs every daemon tick, so never walk historical retry intents in Rust. The bundled
+        // SQLite has JSON functions; join the canonical Run/Attempt rows and return only the tiny
+        // recovery frontier: current N+1 is still Submitting and neither durable row owns a handle.
+        let mut stmt = conn.prepare(
+            "SELECT ri.payload_json
+             FROM retry_intents AS ri
+             JOIN runs AS r ON r.run_id=ri.run_id
+             JOIN run_attempts AS a ON a.run_id=ri.run_id AND a.attempt_no=ri.attempt_no
+             WHERE json_extract(r.record_json, '$.status')='submitting'
+               AND CAST(json_extract(r.record_json, '$.attempt_no') AS INTEGER)=ri.attempt_no
+               AND json_extract(r.record_json, '$.job_id') IS NULL
+               AND json_extract(a.record_json, '$.status')='submitting'
+               AND json_extract(a.record_json, '$.job_id') IS NULL
+             ORDER BY ri.created_at, ri.rowid",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut pending = Vec::new();
+        for row in rows {
+            pending
+                .push(serde_json::from_str(&row?).context("parse pending durable retry intent")?);
+        }
+        Ok(pending)
     }
 
     pub fn rebind_continuation(&self, run_id: &str, binding: &ContinuationBinding) -> Result<u32> {
@@ -1319,6 +1507,18 @@ impl RunStore {
             .transpose()
     }
 
+    pub fn list_attempts(&self, run_id: &str) -> Result<Vec<RunAttemptRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT record_json FROM run_attempts WHERE run_id=?1 ORDER BY attempt_no")?;
+        let rows = stmt.query_map([run_id], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(serde_json::from_str(&row?).context("parse runwatch.db attempt list row")?);
+        }
+        Ok(out)
+    }
+
     pub fn get_observation(
         &self,
         run_id: &str,
@@ -1786,7 +1986,244 @@ mod tests {
             store.get("r-submit").unwrap().unwrap().status,
             RunStatus::Submitting
         );
-        assert_eq!(store.get_attempt("r-submit", 1).unwrap(), Some(attempt));
+        assert_eq!(
+            store.get_attempt("r-submit", 1).unwrap(),
+            Some(attempt.clone())
+        );
+        let mut run2 = run.clone();
+        run2.attempt_no = Some(2);
+        let mut attempt2 = attempt.clone();
+        attempt2.attempt_no = 2;
+        attempt2.job_name = "rw-r-submit-a2".into();
+        attempt2.script_path = "/shared/project/.runwatch/r-submit/attempt-2/run.sh".into();
+        store
+            .persist_run_attempt_event(&run2, &attempt2, "retry_intent_test")
+            .unwrap();
+        assert_eq!(
+            store
+                .list_attempts("r-submit")
+                .unwrap()
+                .into_iter()
+                .map(|value| value.attempt_no)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        cleanup(&db);
+    }
+
+    #[test]
+    fn retry_intent_is_idempotent_and_preserves_previous_attempt() {
+        use crate::types::{RemoteWorkspaceRef, RetryRunSpec, RunResources};
+
+        let (db, legacy) = test_paths("retry-intent");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "cluster".into(),
+            cwd: "/shared/project".into(),
+        };
+        let mut run = RunRecord::new("r-retry".into(), "cluster".into(), RunnerKind::Slurm);
+        run.status = RunStatus::Submitting;
+        run.workspace = Some(workspace);
+        run.attempt_no = Some(1);
+        run.remote_terminal = Some("/shared/project/.runwatch/r-retry/terminal.json".into());
+        run.updated_at = now;
+        let mut attempt = RunAttemptRecord {
+            run_id: run.run_id.clone(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: "cluster".into(),
+            workdir: "/shared/project".into(),
+            command: "python run.py".into(),
+            resources: RunResources::default(),
+            job_name: "rw-r-retry-a1".into(),
+            job_id: Some("1001".into()),
+            script_path: "/shared/project/.runwatch/r-retry/attempt-1.sh".into(),
+            stdout_path: "/shared/project/.runwatch/r-retry/stdout.log".into(),
+            stderr_path: "/shared/project/.runwatch/r-retry/stderr.log".into(),
+            terminal_path: "/shared/project/.runwatch/r-retry/terminal.json".into(),
+            receipt_path: "/shared/project/.runwatch/r-retry/submission.receipt".into(),
+            status: RunStatus::Submitting,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, None)
+                .unwrap()
+        );
+        run.status = RunStatus::Failed;
+        run.updated_at += ChronoDuration::seconds(1);
+        run.note = Some("attempt 1 failed".into());
+        attempt.status = RunStatus::Failed;
+        attempt.updated_at = run.updated_at;
+        store
+            .persist_run_attempt_event(&run, &attempt, "terminal_test")
+            .unwrap();
+
+        let retry = RetryRunSpec {
+            run_id: run.run_id.clone(),
+            expected_attempt_no: 1,
+            request_id: "retry-request-01".into(),
+            resources: Some(RunResources {
+                time: Some("02:00:00".into()),
+                mem: Some("64G".into()),
+                ..RunResources::default()
+            }),
+        };
+        let mut run2 = run.clone();
+        run2.attempt_no = Some(2);
+        run2.job_id = None;
+        run2.status = RunStatus::Submitting;
+        run2.remote_terminal =
+            Some("/shared/project/.runwatch/r-retry/attempt-2/terminal.json".into());
+        run2.updated_at += ChronoDuration::seconds(1);
+        run2.note = None;
+        let mut attempt2 = attempt.clone();
+        attempt2.attempt_no = 2;
+        attempt2.resources = retry.resources.clone().unwrap();
+        attempt2.job_name = "rw-r-retry-a2".into();
+        attempt2.job_id = None;
+        attempt2.script_path = "/shared/project/.runwatch/r-retry/attempt-2/run.sh".into();
+        attempt2.stdout_path = "/shared/project/.runwatch/r-retry/attempt-2/stdout.log".into();
+        attempt2.stderr_path = "/shared/project/.runwatch/r-retry/attempt-2/stderr.log".into();
+        attempt2.terminal_path = "/shared/project/.runwatch/r-retry/attempt-2/terminal.json".into();
+        attempt2.receipt_path =
+            "/shared/project/.runwatch/r-retry/attempt-2/submission.receipt".into();
+        attempt2.status = RunStatus::Submitting;
+        attempt2.created_at = run2.updated_at;
+        attempt2.updated_at = run2.updated_at;
+        attempt2.error = None;
+
+        assert!(store.create_retry_intent(&retry, &run2, &attempt2).unwrap());
+        assert!(!store.create_retry_intent(&retry, &run2, &attempt2).unwrap());
+        assert_eq!(
+            store.list_pending_retry_intents().unwrap(),
+            vec![retry.clone()]
+        );
+        let attempts = store.list_attempts(&run.run_id).unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].attempt_no, 1);
+        assert_eq!(attempts[0].status, RunStatus::Failed);
+        assert_eq!(
+            attempts[0].stdout_path,
+            "/shared/project/.runwatch/r-retry/stdout.log"
+        );
+        assert_eq!(attempts[1].attempt_no, 2);
+        assert_eq!(attempts[1].status, RunStatus::Submitting);
+        assert_ne!(attempts[0].stdout_path, attempts[1].stdout_path);
+        let current = store.get(&run.run_id).unwrap().unwrap();
+        assert_eq!(current.attempt_no, Some(2));
+        assert_eq!(current.status, RunStatus::Submitting);
+        let retry_events = store
+            .list_run_events(&run.run_id, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "retry_intent")
+            .count();
+        assert_eq!(retry_events, 1);
+
+        let stale = RetryRunSpec {
+            request_id: "retry-request-02".into(),
+            ..retry.clone()
+        };
+        let error = store
+            .create_retry_intent(&stale, &run2, &attempt2)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected attempt 1"), "{error}");
+
+        let mut queued_run = run2.clone();
+        queued_run.status = RunStatus::Queued;
+        queued_run.job_id = Some("2002".into());
+        queued_run.updated_at += ChronoDuration::seconds(1);
+        let mut queued_attempt = attempt2.clone();
+        queued_attempt.status = RunStatus::Queued;
+        queued_attempt.job_id = Some("2002".into());
+        queued_attempt.updated_at = queued_run.updated_at;
+        store
+            .persist_run_attempt_event(&queued_run, &queued_attempt, "retry_recovered_test")
+            .unwrap();
+        assert!(store.list_pending_retry_intents().unwrap().is_empty());
+        cleanup(&db);
+    }
+
+    #[test]
+    fn retry_intent_rejects_agent_bound_run() {
+        use crate::types::{ContinuationBinding, RemoteWorkspaceRef, RetryRunSpec, RunResources};
+
+        let (db, legacy) = test_paths("retry-bound");
+        let store = RunStore::open_at(db.clone(), legacy).expect("open store");
+        let now = Utc::now();
+        let workspace = RemoteWorkspaceRef {
+            host_alias: "cluster".into(),
+            cwd: "/shared/project".into(),
+        };
+        let binding = ContinuationBinding {
+            agent_kind: "pi".into(),
+            session_id: "s-bound".into(),
+            session_file: Some("C:/sessions/s-bound.jsonl".into()),
+            origin_leaf_id: Some("leaf-bound".into()),
+            project_root: "C:/science".into(),
+            workspace: workspace.clone(),
+            adapter_path: Some("C:/pi-runs/extensions/runs/index.ts".into()),
+        };
+        let mut run = RunRecord::new("r-bound-retry".into(), "cluster".into(), RunnerKind::Slurm);
+        run.status = RunStatus::Failed;
+        run.workspace = Some(workspace);
+        run.attempt_no = Some(1);
+        run.updated_at = now;
+        let attempt = RunAttemptRecord {
+            run_id: run.run_id.clone(),
+            attempt_no: 1,
+            runner: RunnerKind::Slurm,
+            host: "cluster".into(),
+            workdir: "/shared/project".into(),
+            command: "python run.py".into(),
+            resources: RunResources::default(),
+            job_name: "rw-r-bound-retry-a1".into(),
+            job_id: Some("1002".into()),
+            script_path: "/shared/project/.runwatch/r-bound-retry/attempt-1.sh".into(),
+            stdout_path: "/shared/project/.runwatch/r-bound-retry/stdout.log".into(),
+            stderr_path: "/shared/project/.runwatch/r-bound-retry/stderr.log".into(),
+            terminal_path: "/shared/project/.runwatch/r-bound-retry/terminal.json".into(),
+            receipt_path: "/shared/project/.runwatch/r-bound-retry/submission.receipt".into(),
+            status: RunStatus::Failed,
+            created_at: now,
+            updated_at: now,
+            error: Some("failed".into()),
+        };
+        assert!(
+            store
+                .create_submission_intent(&run, &attempt, Some(&binding))
+                .unwrap()
+        );
+        let retry = RetryRunSpec {
+            run_id: run.run_id.clone(),
+            expected_attempt_no: 1,
+            request_id: "retry-bound-01".into(),
+            resources: None,
+        };
+        let mut run2 = run.clone();
+        run2.attempt_no = Some(2);
+        run2.job_id = None;
+        run2.status = RunStatus::Submitting;
+        run2.updated_at += ChronoDuration::seconds(1);
+        let mut attempt2 = attempt.clone();
+        attempt2.attempt_no = 2;
+        attempt2.job_name = "rw-r-bound-retry-a2".into();
+        attempt2.job_id = None;
+        attempt2.status = RunStatus::Submitting;
+        attempt2.created_at = run2.updated_at;
+        attempt2.updated_at = run2.updated_at;
+        attempt2.error = None;
+        let error = store
+            .create_retry_intent(&retry, &run2, &attempt2)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires an unbound Run"), "{error}");
+        assert_eq!(store.list_attempts(&run.run_id).unwrap().len(), 1);
         cleanup(&db);
     }
 
@@ -2659,6 +3096,51 @@ mod tests {
     }
 
     #[test]
+    fn opens_schema_v2_in_place_and_adds_retry_intents() {
+        let (db, legacy) = test_paths("schema-v2-upgrade");
+        let conn = Connection::open(&db).expect("create v2 database");
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta(key, value) VALUES('schema_version', '2');
+             CREATE TABLE runs (
+                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                 run_id TEXT NOT NULL UNIQUE,
+                 record_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE TABLE run_attempts (
+                 run_id TEXT NOT NULL,
+                 attempt_no INTEGER NOT NULL,
+                 record_json TEXT NOT NULL,
+                 PRIMARY KEY (run_id, attempt_no)
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = RunStore::open_at(db.clone(), legacy).expect("upgrade v2 store");
+        let conn = store.connect().expect("connect upgraded store");
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "3");
+        let retry_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='retry_intents'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retry_table, 1);
+        drop(conn);
+        cleanup(&db);
+    }
+
+    #[test]
     fn initializes_future_model_tables() {
         let (db, legacy) = test_paths("schema");
         let store = RunStore::open_at(db.clone(), legacy).expect("open store");
@@ -2666,6 +3148,7 @@ mod tests {
         for table in [
             "runs",
             "run_attempts",
+            "retry_intents",
             "run_events",
             "observations",
             "deliveries",

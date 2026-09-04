@@ -571,11 +571,26 @@ pub async fn probe_run(store: &RunStore, pool: &HostPool, run_id: &str) -> Resul
     tick_selected(store, pool, |record| record.run_id == run_id).await
 }
 
+async fn resume_pending_retries(store: &RunStore, pool: &HostPool) -> Result<Vec<String>> {
+    let mut errors = Vec::new();
+    for retry in store.list_pending_retry_intents()? {
+        let run_id = retry.run_id.clone();
+        let request_id = retry.request_id.clone();
+        if let Err(error) = submission::retry_run(store, pool, retry).await {
+            errors.push(format!(
+                "{run_id}: durable retry recovery {request_id} failed: {error:#}"
+            ));
+        }
+    }
+    Ok(errors)
+}
+
 pub async fn tick_due(
     store: &RunStore,
     pool: &HostPool,
     base_interval: Duration,
 ) -> Result<TickReport> {
+    let retry_recovery_errors = resume_pending_retries(store, pool).await?;
     let now = Utc::now();
     let observations = store
         .list_observations()?
@@ -661,6 +676,7 @@ pub async fn tick_due(
     })
     .await?;
     batch_transitions.append(&mut report.transitions);
+    batch_errors.extend(retry_recovery_errors);
     batch_errors.append(&mut report.errors);
     report.transitions = batch_transitions;
     report.errors = batch_errors;

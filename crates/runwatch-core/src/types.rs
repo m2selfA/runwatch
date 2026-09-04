@@ -116,6 +116,15 @@ pub struct SubmitRunSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryRunSpec {
+    pub run_id: String,
+    pub expected_attempt_no: u32,
+    pub request_id: String,
+    #[serde(default)]
+    pub resources: Option<RunResources>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunAttemptRecord {
     pub run_id: String,
     pub attempt_no: u32,

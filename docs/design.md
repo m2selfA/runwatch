@@ -514,6 +514,24 @@ The Hosts page no longer receives a preformatted text blob. `runwatch-ssh` still
 
 Debug/CI coverage now includes a dedicated `hosts` fixture. In addition to the standard 1080×720 render, Hosts is rendered at 760×720 and 1440×900 so responsive behavior cannot silently regress into a fixed-column layout.
 
+### R17 durable multi-Attempt lifecycle（2026-09-04）
+
+R17 turns the existing `Run -> current Attempt` shape into a real durable multi-Attempt lifecycle. `Run` remains the stable scientific/logical object; retry never creates a new logical Run. `RunRecord.attempt_no` is the current/latest Attempt pointer, while every `RunAttemptRecord` is immutable historical execution evidence except for that Attempt's own lifecycle fields while it is active.
+
+New R17 executions use attempt-scoped lifecycle directories so a later retry can never overwrite earlier evidence. New scheduler Runs use `<cwd>/.runwatch/<run_id>/attempt-N/{run.sh,stdout.log,stderr.log,terminal.json,submission.receipt}` and Local Process uses the corresponding `run.ps1` plus `started.json`/`armed`. Existing v0.2.0 Attempt records are not rewritten or migrated: their persisted paths remain authoritative and continue to be readable exactly where they were created.
+
+Ambiguous submission recovery and retry are separate operations. A `Submitting` Attempt with an uncertain scheduler reply must reuse its original Attempt number and durable submission receipt; it must never allocate N+1. A new retry is only legal after a terminal Attempt and is daemon-owned. The `retry_run_v1` contract carries `run_id`, `expected_attempt_no`, a durable client `request_id`, and bounded resource overrides. Allocation happens under an immediate SQLite transaction so one request maps to exactly one N+1 Attempt and stale/concurrent requests fail closed rather than spawning duplicate scientific execution.
+
+The first human retry surface is intentionally conservative: only Failed/Cancelled, unbound Runs may be retried from the GUI; command/workspace/runner/host remain part of the logical Run identity and are not editable during normal Retry. Scheduler resource envelope fields may be adjusted. A human who wants a different command/workspace creates a new Run (eventually `Duplicate as New Run`). Agent-bound Runs expose Attempt history but GUI Retry remains unavailable; the owning Agent Integration decides retry policy so the GUI does not silently alter a Pi/Codex continuation workflow.
+
+Read APIs become Attempt-aware before write-side retry is enabled: list Attempts, select a specific Attempt observation, and request Attempt-scoped logs/artifacts. Run timeline remains global and immutable. Terminal Delivery is already Attempt-scoped (`<run_id>:a<attempt_no>:terminal`), so future Agent Integration retry can preserve exactly which execution produced each continuation without changing runwatch's durable authority boundary.
+
+R17 materially changes Attempt allocation/write semantics and therefore requires fresh crash/restart/ambiguous-submit qualification. If the write path is promoted to production release, prior v0.1/R11 endurance evidence is historical evidence only and cannot by itself qualify the new multi-Attempt writer.
+
+R17e therefore owns a separate writer-specific endurance authority rather than replaying the Pi continuation soak. `scripts/acceptance/r17_retry_endurance.ps1` freezes the git commit, a copied `runwatch.exe` SHA-256, the driver SHA-256, Slurm Host/workspace, target duration, retry delay, crash timing and minimum round count. The formal profile is **7200 seconds clean active time and at least 10 clean rounds**. Every round creates one unbound Local Process Run and one unbound Slurm Run, intentionally fails Attempt 1, retries the same logical Run as Attempt 2 with one durable request ID, waits until the Slurm retry is Running, starts the Local retry, crashes/restarts the production Task Scheduler -> `runwatch supervise` resident while both are active, then replays each request ID both after restart and again after terminal convergence. Qualification requires exactly two Attempts, unchanged Attempt-2 JobID/handle, preserved Attempt-1 logs, one Attempt-2 execution marker per runner, and exactly one submission/start event per Attempt.
+
+The endurance state is resumable only between clean segments. The authority directory lives under ignored `dist/r17-endurance/<authority-id>` and preserves its SQLite/lifecycle evidence. An `active_segment` marker is written before work begins; a driver interruption converts that segment to dirty on the next invocation. Any dirty segment permanently makes that authority non-resumable, and only a completely new authority may start. Segment wall-clock budget is orchestration-only and may vary between invocations; the frozen scientific delay/crash/target contract may not.
+
 ### GUI 验收基线
 
 R13 GUI 改造至少需要以下门禁：

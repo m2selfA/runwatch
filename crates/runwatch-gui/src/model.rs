@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use runwatch_core::{
     ObservationHealth, ObservationRecord, RunAttemptRecord, RunContinuationStatus, RunEventRecord,
-    RunRecord, RunStatus, RunnerKind,
+    RunRecord, RunResources, RunStatus, RunnerKind,
 };
 use std::collections::HashMap;
 
@@ -112,6 +112,7 @@ pub struct DashboardSnapshot {
     pub daemon_pid: u64,
     pub paused: bool,
     pub manual_submit_supported: bool,
+    pub retry_supported: bool,
     pub rows: Vec<RunRow>,
     pub active: usize,
     pub attention: usize,
@@ -123,12 +124,27 @@ pub struct DashboardSnapshot {
 pub struct RunDetailView {
     pub run_id: String,
     pub title: String,
+    pub selected_attempt_no: Option<u32>,
+    pub attempt_numbers: Vec<u32>,
+    pub attempt_label: String,
     pub overview: String,
     pub logs: String,
     pub artifacts: String,
     pub timeline: String,
     pub continuation: String,
+    pub retry_context: Option<RetryContextView>,
     pub can_cancel: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RetryContextView {
+    pub run_id: String,
+    pub expected_attempt_no: u32,
+    pub runner: RunnerKind,
+    pub host: String,
+    pub workdir: String,
+    pub command: String,
+    pub resources: RunResources,
 }
 
 pub fn project_dashboard(
@@ -138,6 +154,7 @@ pub fn project_dashboard(
     daemon_pid: u64,
     paused: bool,
     manual_submit_supported: bool,
+    retry_supported: bool,
     runs: Vec<RunRecord>,
     observations: Vec<ObservationRecord>,
     continuations: Vec<RunContinuationStatus>,
@@ -193,6 +210,7 @@ pub fn project_dashboard(
         daemon_pid,
         paused,
         manual_submit_supported,
+        retry_supported,
         rows,
         active,
         attention,
@@ -342,6 +360,8 @@ pub fn build_detail(
     run: RunRecord,
     observation: Option<ObservationRecord>,
     attempt: Option<RunAttemptRecord>,
+    attempts: Vec<RunAttemptRecord>,
+    selected_attempt_no: Option<u32>,
     attempt_error: Option<String>,
     continuation: RunContinuationStatus,
     continuation_error: Option<String>,
@@ -384,8 +404,10 @@ pub fn build_detail(
             .as_ref()
             .map(|value| {
                 format!(
-                    "attempt {}\ncreated: {}\nworkdir: {}\ncommand: {}\nresources: {}",
+                    "attempt {}\nstatus: {}\nhandle: {}\ncreated: {}\nworkdir: {}\ncommand: {}\nresources: {}",
                     value.attempt_no,
+                    status_label(value.status),
+                    value.job_id.as_deref().unwrap_or("-"),
                     value.created_at.to_rfc3339(),
                     value.workdir,
                     bounded_text(&value.command, 800),
@@ -394,18 +416,44 @@ pub fn build_detail(
             })
             .unwrap_or_else(|| "No durable Attempt metadata yet".into())
     };
-    let overview = format!(
-        "Run ID: {}\nStatus: {}\nRunner: {}\nHost: {}\nHandle: {}\nWorkspace: {}\nUpdated: {}\n\nObservation\n{}\n\nAttempt\n{}",
-        run.run_id,
-        status_label(run.status),
-        runner_label(run.runner),
-        run.host,
-        run.job_id.as_deref().unwrap_or("-"),
-        workspace,
-        run.updated_at.to_rfc3339(),
-        observation_text,
-        attempt_text
-    );
+    let attempt_numbers = attempts
+        .iter()
+        .map(|value| value.attempt_no)
+        .collect::<Vec<_>>();
+    let attempt_history = if attempts.is_empty() {
+        "No durable Attempt history yet".into()
+    } else {
+        attempts
+            .iter()
+            .map(|value| {
+                format!(
+                    "#{} {} {}",
+                    value.attempt_no,
+                    status_label(value.status),
+                    value.job_id.as_deref().unwrap_or("-")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ·  ")
+    };
+    let attempt_label = selected_attempt_no
+        .map(|selected| {
+            let position = attempt_numbers
+                .iter()
+                .position(|value| *value == selected)
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            let marker = if run.attempt_no == Some(selected) {
+                "current"
+            } else {
+                "historical"
+            };
+            format!(
+                "Attempt {selected} · {position}/{} · {marker}",
+                attempt_numbers.len()
+            )
+        })
+        .unwrap_or_else(|| "No Attempt".into());
     let timeline = if let Some(error) = events_error {
         format!("Timeline unavailable\n{error}")
     } else if events.is_empty() {
@@ -424,6 +472,57 @@ pub fn build_detail(
             .collect::<Vec<_>>()
             .join("\n\n")
     };
+    let continuation_known_unbound = continuation_error.is_none() && !continuation.configured;
+    let current_attempt_no = run.attempt_no;
+    let selected_is_current =
+        selected_attempt_no.is_some() && selected_attempt_no == current_attempt_no;
+    let retry_context = if selected_is_current
+        && continuation_known_unbound
+        && matches!(run.status, RunStatus::Failed | RunStatus::Cancelled)
+    {
+        attempt.as_ref().and_then(|value| {
+            matches!(value.status, RunStatus::Failed | RunStatus::Cancelled).then(|| {
+                RetryContextView {
+                    run_id: run.run_id.clone(),
+                    expected_attempt_no: value.attempt_no,
+                    runner: value.runner,
+                    host: value.host.clone(),
+                    workdir: value.workdir.clone(),
+                    command: value.command.clone(),
+                    resources: value.resources.clone(),
+                }
+            })
+        })
+    } else {
+        None
+    };
+    let retry_policy = if !selected_is_current {
+        "Historical Attempt selected; return to the current Attempt before retrying."
+    } else if continuation_error.is_some() {
+        "Continuation status is unavailable; human Retry fails closed."
+    } else if continuation.configured {
+        "This Run is agent-bound; Retry is managed by the owning Agent Integration."
+    } else if !matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
+        "Human Retry is available only after the current Attempt is failed or cancelled."
+    } else if retry_context.is_some() {
+        "Eligible for human Retry. Command/workspace/runner/host stay fixed; only scheduler resources may be reviewed."
+    } else {
+        "Retry is unavailable because durable current-Attempt metadata is incomplete."
+    };
+    let overview = format!(
+        "Run ID: {}\nStatus: {}\nRunner: {}\nHost: {}\nHandle: {}\nWorkspace: {}\nUpdated: {}\n\nAttempt history\n{}\n\nSelected observation\n{}\n\nSelected Attempt\n{}\n\nRetry policy\n{}",
+        run.run_id,
+        status_label(run.status),
+        runner_label(run.runner),
+        run.host,
+        run.job_id.as_deref().unwrap_or("-"),
+        workspace,
+        run.updated_at.to_rfc3339(),
+        attempt_history,
+        observation_text,
+        attempt_text,
+        retry_policy
+    );
     let continuation_text = if let Some(error) = continuation_error {
         format!("Continuation status unavailable\n{error}")
     } else if continuation.configured {
@@ -451,12 +550,16 @@ pub fn build_detail(
     RunDetailView {
         run_id: run.run_id.clone(),
         title,
+        selected_attempt_no,
+        attempt_numbers,
+        attempt_label,
         overview,
         logs,
         artifacts,
         timeline,
         continuation: continuation_text,
-        can_cancel: !run.status.is_terminal(),
+        retry_context,
+        can_cancel: selected_attempt_no == current_attempt_no && !run.status.is_terminal(),
     }
 }
 
@@ -614,6 +717,44 @@ mod tests {
         }
     }
 
+    fn attempt(
+        run_id: &str,
+        attempt_no: u32,
+        status: RunStatus,
+        now: DateTime<Utc>,
+    ) -> RunAttemptRecord {
+        RunAttemptRecord {
+            run_id: run_id.into(),
+            attempt_no,
+            runner: RunnerKind::Slurm,
+            host: "gm00".into(),
+            workdir: "/share/work".into(),
+            command: "python refine.py --input map.mrc".into(),
+            resources: RunResources {
+                time: Some("02:00:00".into()),
+                partition: Some("gpu".into()),
+                cpus: Some(8),
+                mem: Some("32G".into()),
+                ..RunResources::default()
+            },
+            job_name: format!("rw-{run_id}-a{attempt_no}"),
+            job_id: Some(format!("3184{attempt_no}")),
+            script_path: format!("/share/work/.runwatch/{run_id}/attempt-{attempt_no}/run.sh"),
+            stdout_path: format!("/share/work/.runwatch/{run_id}/attempt-{attempt_no}/stdout.log"),
+            stderr_path: format!("/share/work/.runwatch/{run_id}/attempt-{attempt_no}/stderr.log"),
+            terminal_path: format!(
+                "/share/work/.runwatch/{run_id}/attempt-{attempt_no}/terminal.json"
+            ),
+            receipt_path: format!(
+                "/share/work/.runwatch/{run_id}/attempt-{attempt_no}/submission.receipt"
+            ),
+            status,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        }
+    }
+
     fn dashboard(
         runs: Vec<RunRecord>,
         observations: Vec<ObservationRecord>,
@@ -626,6 +767,7 @@ mod tests {
             24,
             4242,
             false,
+            true,
             true,
             runs,
             observations,
@@ -846,6 +988,8 @@ mod tests {
             run("r-detail", RunStatus::Running, now),
             None,
             None,
+            vec![],
+            Some(1),
             Some("attempt IPC failed".into()),
             RunContinuationStatus::default(),
             Some("continuation IPC failed".into()),
@@ -866,6 +1010,98 @@ mod tests {
         assert!(detail.continuation.contains("continuation IPC failed"));
         assert!(detail.logs.contains("Logs unavailable"));
         assert!(detail.artifacts.contains("Artifacts unavailable"));
+    }
+
+    #[test]
+    fn human_retry_context_is_fail_closed_around_binding_and_attempt_selection() {
+        let now = Utc::now();
+        let failed = attempt("r-retry-ui", 1, RunStatus::Failed, now);
+        let eligible = build_detail(
+            run("r-retry-ui", RunStatus::Failed, now),
+            None,
+            Some(failed.clone()),
+            vec![failed.clone()],
+            Some(1),
+            None,
+            RunContinuationStatus::default(),
+            None,
+            vec![],
+            None,
+            String::new(),
+            String::new(),
+        );
+        let retry = eligible
+            .retry_context
+            .expect("unbound failed current Attempt should retry");
+        assert_eq!(retry.expected_attempt_no, 1);
+        assert_eq!(retry.command, failed.command);
+        assert_eq!(retry.resources.cpus, Some(8));
+        assert!(eligible.overview.contains("Eligible for human Retry"));
+
+        let bound = build_detail(
+            run("r-retry-ui", RunStatus::Failed, now),
+            None,
+            Some(failed.clone()),
+            vec![failed.clone()],
+            Some(1),
+            None,
+            RunContinuationStatus {
+                run_id: "r-retry-ui".into(),
+                configured: true,
+                agent_kind: Some("pi".into()),
+                session_id: Some("session-bound".into()),
+                ..RunContinuationStatus::default()
+            },
+            None,
+            vec![],
+            None,
+            String::new(),
+            String::new(),
+        );
+        assert!(bound.retry_context.is_none());
+        assert!(
+            bound
+                .overview
+                .contains("managed by the owning Agent Integration")
+        );
+
+        let unknown_binding = build_detail(
+            run("r-retry-ui", RunStatus::Failed, now),
+            None,
+            Some(failed.clone()),
+            vec![failed.clone()],
+            Some(1),
+            None,
+            RunContinuationStatus::default(),
+            Some("continuation IPC unavailable".into()),
+            vec![],
+            None,
+            String::new(),
+            String::new(),
+        );
+        assert!(unknown_binding.retry_context.is_none());
+        assert!(unknown_binding.overview.contains("fails closed"));
+
+        let mut current = run("r-retry-ui", RunStatus::Failed, now);
+        current.attempt_no = Some(2);
+        current.job_id = Some("31842".into());
+        let current_attempt = attempt("r-retry-ui", 2, RunStatus::Failed, now);
+        let historical = build_detail(
+            current,
+            None,
+            Some(failed.clone()),
+            vec![failed, current_attempt],
+            Some(1),
+            None,
+            RunContinuationStatus::default(),
+            None,
+            vec![],
+            None,
+            String::new(),
+            String::new(),
+        );
+        assert!(historical.retry_context.is_none());
+        assert!(historical.overview.contains("Historical Attempt selected"));
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::ipc_client;
 use crate::model::{DashboardSnapshot, HostCardView, RunDetailView, project_dashboard};
 use crate::notifications::{Notice, NoticeKind, TransitionTracker};
 use chrono::Utc;
-use runwatch_core::{SubmitRunSpec, autostart};
+use runwatch_core::{RetryRunSpec, SubmitRunSpec, autostart};
 use tokio::sync::mpsc;
 use windui::prelude::Sender;
 
@@ -13,12 +13,14 @@ pub enum Command {
     LoadDetail {
         request_id: u64,
         run_id: String,
+        attempt_no: Option<u32>,
         tail: usize,
         event_limit: usize,
     },
     Cancel(String),
     Probe(String),
     SubmitManual(SubmitRunSpec),
+    Retry(RetryRunSpec),
     SetDaemonAutostart(bool),
     SetGuiAutostart(bool),
 }
@@ -36,6 +38,10 @@ pub enum UiEvent {
     },
     Hosts(Result<Vec<HostCardView>, String>),
     ManualSubmitResult {
+        run_id: String,
+        result: Result<(), String>,
+    },
+    RetryResult {
         run_id: String,
         result: Result<(), String>,
     },
@@ -105,6 +111,7 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
                                 Command::LoadDetail {
                                     request_id,
                                     run_id,
+                                    attempt_no,
                                     tail,
                                     event_limit,
                                 } => {
@@ -113,7 +120,7 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
                                     }
                                     let ui_detail = ui.clone();
                                     detail_task = Some(tokio::spawn(async move {
-                                        match ipc_client::load_detail(&run_id, tail, event_limit).await {
+                                        match ipc_client::load_detail(&run_id, attempt_no, tail, event_limit).await {
                                             Ok(detail) => {
                                                 let _ = ui_detail.send(UiEvent::Detail {
                                                     request_id,
@@ -183,6 +190,17 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
                                             run_id: requested_run_id,
                                             result,
                                         });
+                                    });
+                                }
+                                Command::Retry(retry) => {
+                                    let ui_retry = ui.clone();
+                                    tokio::spawn(async move {
+                                        let run_id = retry.run_id.clone();
+                                        let result = ipc_client::retry_run(retry)
+                                            .await
+                                            .map(|_| ())
+                                            .map_err(|error| format!("{error:#}"));
+                                        let _ = ui_retry.send(UiEvent::RetryResult { run_id, result });
                                     });
                                 }
                                 Command::SetDaemonAutostart(enabled) => {
@@ -264,6 +282,7 @@ async fn refresh(ui: &Sender<UiEvent>, tracker: &mut TransitionTracker) -> bool 
                 payload.pid,
                 payload.paused,
                 payload.manual_submit_supported,
+                payload.retry_supported,
                 payload.runs,
                 payload.observations,
                 payload.continuations,

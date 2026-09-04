@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use runwatch_core::{
-    AgentSessionRegistration, ContinuationBinding, RunRecord, RunStore, SubmitRunSpec,
+    AgentSessionRegistration, ContinuationBinding, RetryRunSpec, RunRecord, RunStore, SubmitRunSpec,
 };
 use runwatch_ssh::HostPool;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,8 @@ struct Request {
     run: Option<RunRecord>,
     #[serde(default)]
     spec: Option<SubmitRunSpec>,
+    #[serde(default)]
+    retry: Option<RetryRunSpec>,
     #[serde(default)]
     registration: Option<AgentSessionRegistration>,
     #[serde(default)]
@@ -113,7 +115,7 @@ fn hello_response(id: String) -> Response {
             "service": "runwatchd",
             "storage": "sqlite-wal",
             "capabilities": [
-                "hello", "daemon_status", "set_paused", "list_runs", "get_run", "get_observation", "get_attempt", "list_run_events", "get_continuation_status", "adopt_run_v1", "tick", "probe_run", "wait_run", "submit_run_v2", "logs", "artifacts", "cancel_run",
+                "hello", "daemon_status", "set_paused", "list_runs", "get_run", "get_observation", "get_attempt", "list_attempts", "list_run_events", "get_continuation_status", "adopt_run_v1", "tick", "probe_run", "wait_run", "submit_run_v2", "retry_run_v1", "logs", "artifacts", "cancel_run",
                 "register_agent_session", "release_agent_session",
                 "claim_deliveries", "delivery_status", "ack_delivery", "rebind_continuation",
                 "verify_offline_invocation", "offline_pi_continuation", "offline_codex_continuation"
@@ -190,7 +192,7 @@ fn handle_control_request(request: Request, store: &RunStore, paused: &AtomicBoo
                 return Response::error(id, "get_observation requires run_id");
             };
             match store.get(&run_id) {
-                Ok(Some(run)) => match run.attempt_no {
+                Ok(Some(run)) => match request.attempt_no.or(run.attempt_no) {
                     Some(attempt_no) => match store.get_observation(&run.run_id, attempt_no) {
                         Ok(observation) => Response::ok(id, json!({ "observation": observation })),
                         Err(err) => Response::error(id, err.to_string()),
@@ -216,6 +218,19 @@ fn handle_control_request(request: Request, store: &RunStore, paused: &AtomicBoo
                         None => Response::ok(id, json!({ "attempt": null })),
                     }
                 }
+                Ok(None) => Response::error(id, format!("unknown run {run_id}")),
+                Err(err) => Response::error(id, err.to_string()),
+            }
+        }
+        "list_attempts" => {
+            let Some(run_id) = request.run_id.clone() else {
+                return Response::error(id, "list_attempts requires run_id");
+            };
+            match store.get(&run_id) {
+                Ok(Some(_)) => match store.list_attempts(&run_id) {
+                    Ok(attempts) => Response::ok(id, json!({ "attempts": attempts })),
+                    Err(err) => Response::error(id, err.to_string()),
+                },
                 Ok(None) => Response::error(id, format!("unknown run {run_id}")),
                 Err(err) => Response::error(id, err.to_string()),
             }
@@ -448,11 +463,28 @@ async fn handle_request(
                 Err(err) => Response::error(id, format!("{err:#}")),
             }
         }
+        "retry_run_v1" => {
+            let Some(retry) = request.retry else {
+                return Response::error(id, "retry_run_v1 requires retry");
+            };
+            match crate::submission::retry_run(store, pool, retry).await {
+                Ok(run) => Response::ok(id, json!({ "run": run })),
+                Err(err) => Response::error(id, format!("{err:#}")),
+            }
+        }
         "logs" => {
             let Some(run_id) = request.run_id else {
                 return Response::error(id, "logs requires run_id");
             };
-            match crate::operations::logs_run(store, pool, &run_id, request.tail).await {
+            match crate::operations::logs_run(
+                store,
+                pool,
+                &run_id,
+                request.attempt_no,
+                request.tail,
+            )
+            .await
+            {
                 Ok(logs) => Response::ok(id, json!({ "logs": logs })),
                 Err(err) => Response::error(id, format!("{err:#}")),
             }
@@ -461,7 +493,7 @@ async fn handle_request(
             let Some(run_id) = request.run_id else {
                 return Response::error(id, "artifacts requires run_id");
             };
-            match crate::operations::artifacts_run(store, &run_id) {
+            match crate::operations::artifacts_run(store, &run_id, request.attempt_no) {
                 Ok(artifacts) => Response::ok(id, json!({ "artifacts": artifacts })),
                 Err(err) => Response::error(id, format!("{err:#}")),
             }
@@ -893,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn hello_advertises_v2_submit_capability() {
+    fn hello_advertises_submission_and_multi_attempt_capabilities() {
         let response = hello_response("1".into());
         assert!(response.ok);
         let result = response.result.expect("hello result");
@@ -906,6 +938,20 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|value| value == "submit_run_v2")
+        );
+        assert!(
+            result["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "retry_run_v1")
+        );
+        assert!(
+            result["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "list_attempts")
         );
         assert!(
             result["capabilities"]

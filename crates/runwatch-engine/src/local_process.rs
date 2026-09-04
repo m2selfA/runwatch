@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::Utc;
 use runwatch_core::{
-    ContinuationBinding, RemoteWorkspaceRef, RunAttemptRecord, RunRecord, RunResources, RunStatus,
-    RunStore, RunnerKind, SubmitRunSpec, parse_terminal,
+    ContinuationBinding, RemoteWorkspaceRef, RetryRunSpec, RunAttemptRecord, RunRecord,
+    RunResources, RunStatus, RunStore, RunnerKind, SubmitRunSpec, parse_terminal,
 };
 use serde::Deserialize;
 use std::fs;
@@ -89,13 +89,20 @@ struct LocalPlan {
 
 impl LocalPlan {
     fn build(spec: SubmitRunSpec) -> Result<Self> {
+        Self::build_for_attempt(spec, 1)
+    }
+
+    fn build_for_attempt(spec: SubmitRunSpec, attempt_no: u32) -> Result<Self> {
         validate_local_spec(&spec)?;
-        let attempt_no = 1;
+        if attempt_no == 0 {
+            bail!("attempt_no must be positive");
+        }
         let run_dir = PathBuf::from(&spec.workspace.cwd)
             .join(".runwatch")
-            .join(&spec.run_id);
+            .join(&spec.run_id)
+            .join(format!("attempt-{attempt_no}"));
         Ok(Self {
-            wrapper_path: run_dir.join(format!("attempt-{attempt_no}.ps1")),
+            wrapper_path: run_dir.join("run.ps1"),
             stdout_path: run_dir.join("stdout.log"),
             stderr_path: run_dir.join("stderr.log"),
             terminal_path: run_dir.join("terminal.json"),
@@ -106,6 +113,29 @@ impl LocalPlan {
             attempt_no,
             run_dir,
         })
+    }
+
+    fn from_attempt(spec: SubmitRunSpec, attempt: &RunAttemptRecord) -> Result<Self> {
+        let mut plan = Self::build_for_attempt(spec, attempt.attempt_no)?;
+        let (_, desired) = plan.run_and_attempt();
+        if !submission_identity_matches(attempt, &desired) {
+            bail!(
+                "persisted local Attempt {} does not match the requested submission identity",
+                attempt.attempt_no
+            );
+        }
+        plan.run_dir = Path::new(&attempt.script_path)
+            .parent()
+            .context("local lifecycle script path has no parent")?
+            .to_path_buf();
+        plan.wrapper_path = PathBuf::from(&attempt.script_path);
+        plan.stdout_path = PathBuf::from(&attempt.stdout_path);
+        plan.stderr_path = PathBuf::from(&attempt.stderr_path);
+        plan.terminal_path = PathBuf::from(&attempt.terminal_path);
+        plan.receipt_path = PathBuf::from(&attempt.receipt_path);
+        plan.started_path = started_path(attempt)?;
+        plan.armed_path = armed_path(attempt)?;
+        Ok(plan)
     }
 
     fn run_and_attempt(&self) -> (RunRecord, RunAttemptRecord) {
@@ -476,34 +506,15 @@ fn mark_submission_failed(
     store.persist_run_attempt_event(&run, &attempt, "local_submission_failed")
 }
 
-pub fn submit_local_run(store: &RunStore, spec: SubmitRunSpec) -> Result<RunRecord> {
-    let plan = LocalPlan::build(spec)?;
-    let (desired_run, desired_attempt) = plan.run_and_attempt();
-    let created = store.create_submission_intent(
-        &desired_run,
-        &desired_attempt,
-        plan.spec.continuation.as_ref(),
-    )?;
-    let (mut run, mut attempt) = if created {
-        (desired_run, desired_attempt)
-    } else {
-        let run = store
-            .get(&plan.spec.run_id)?
-            .context("local submission Run exists but could not be loaded")?;
-        let attempt = store
-            .get_attempt(&plan.spec.run_id, plan.attempt_no)?
-            .context("local submission Run exists without attempt 1")?;
-        if !submission_identity_matches(&attempt, &desired_attempt) {
-            bail!(
-                "run_id {} already exists with a different local submission spec",
-                plan.spec.run_id
-            );
-        }
-        if attempt.job_id.is_some() && run.status != RunStatus::Submitting {
-            return Ok(run);
-        }
-        (run, attempt)
-    };
+fn continue_local_submission(
+    store: &RunStore,
+    plan: &LocalPlan,
+    mut run: RunRecord,
+    mut attempt: RunAttemptRecord,
+) -> Result<RunRecord> {
+    if attempt.job_id.is_some() || run.status != RunStatus::Submitting {
+        return Ok(run);
+    }
 
     fs::create_dir_all(&plan.run_dir)?;
     fs::write(&plan.wrapper_path, plan.wrapper_script())?;
@@ -523,7 +534,7 @@ pub fn submit_local_run(store: &RunStore, spec: SubmitRunSpec) -> Result<RunReco
             for path in [&plan.receipt_path, &plan.started_path, &plan.armed_path] {
                 let _ = fs::remove_file(path);
             }
-            match spawn_wrapper(&plan) {
+            match spawn_wrapper(plan) {
                 Ok(handle) => handle,
                 Err(error) => {
                     let message = format!("local Process launch failed: {error:#}");
@@ -548,6 +559,84 @@ pub fn submit_local_run(store: &RunStore, spec: SubmitRunSpec) -> Result<RunReco
     store.persist_run_attempt_event(&run, &attempt, "local_process_started")?;
     arm(&attempt)?;
     Ok(run)
+}
+
+pub fn submit_local_run(store: &RunStore, spec: SubmitRunSpec) -> Result<RunRecord> {
+    let plan = LocalPlan::build(spec)?;
+    let (desired_run, desired_attempt) = plan.run_and_attempt();
+    let created = store.create_submission_intent(
+        &desired_run,
+        &desired_attempt,
+        plan.spec.continuation.as_ref(),
+    )?;
+    let (run, attempt, plan) = if created {
+        (desired_run, desired_attempt, plan)
+    } else {
+        let run = store
+            .get(&plan.spec.run_id)?
+            .context("local submission Run exists but could not be loaded")?;
+        let attempt = store
+            .get_attempt(&plan.spec.run_id, plan.attempt_no)?
+            .context("local submission Run exists without attempt 1")?;
+        if !submission_identity_matches(&attempt, &desired_attempt) {
+            bail!(
+                "run_id {} already exists with a different local submission spec",
+                plan.spec.run_id
+            );
+        }
+        let persisted_plan = LocalPlan::from_attempt(plan.spec.clone(), &attempt)?;
+        (run, attempt, persisted_plan)
+    };
+    continue_local_submission(store, &plan, run, attempt)
+}
+
+pub fn retry_local_run(store: &RunStore, retry: RetryRunSpec) -> Result<RunRecord> {
+    let current = store
+        .get(&retry.run_id)?
+        .with_context(|| format!("unknown run {}", retry.run_id))?;
+    let previous = store
+        .get_attempt(&retry.run_id, retry.expected_attempt_no)?
+        .with_context(|| {
+            format!(
+                "Run {} is missing Attempt {}",
+                retry.run_id, retry.expected_attempt_no
+            )
+        })?;
+    let submit_spec = SubmitRunSpec {
+        run_id: current.run_id.clone(),
+        name: current.name.clone(),
+        workspace: current
+            .workspace
+            .clone()
+            .context("retry Run has no durable workspace")?,
+        runner: current.runner,
+        command: previous.command.clone(),
+        resources: retry
+            .resources
+            .clone()
+            .unwrap_or_else(|| previous.resources.clone()),
+        continuation: None,
+    };
+    let next_attempt_no = retry
+        .expected_attempt_no
+        .checked_add(1)
+        .context("retry attempt number overflow")?;
+    let plan = LocalPlan::build_for_attempt(submit_spec, next_attempt_no)?;
+    let (desired_run, desired_attempt) = plan.run_and_attempt();
+    let created = store.create_retry_intent(&retry, &desired_run, &desired_attempt)?;
+    let (run, attempt, plan) = if created {
+        (desired_run, desired_attempt, plan)
+    } else {
+        let run = store
+            .get(&retry.run_id)?
+            .context("retry Run disappeared after durable intent")?;
+        let attempt = store
+            .get_attempt(&retry.run_id, next_attempt_no)?
+            .context("durable retry intent is missing its Attempt")?;
+        let persisted_plan = LocalPlan::from_attempt(plan.spec.clone(), &attempt)?;
+        (run, attempt, persisted_plan)
+    };
+    continue_local_submission(store, &plan, run, attempt)
 }
 
 fn cancel_requested(run: &RunRecord) -> bool {
@@ -692,6 +781,43 @@ mod tests {
         assert!(script.contains("-EncodedCommand"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn local_retry_plan_is_attempt_scoped_and_legacy_paths_remain_authoritative() {
+        let spec = SubmitRunSpec {
+            run_id: "local-retry-plan".into(),
+            name: None,
+            workspace: RemoteWorkspaceRef {
+                host_alias: LOCAL_HOST_ALIAS.into(),
+                cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            },
+            runner: RunnerKind::Process,
+            command: "Write-Output 'science'".into(),
+            resources: RunResources::default(),
+            continuation: None,
+        };
+        let retry = LocalPlan::build_for_attempt(spec.clone(), 2).unwrap();
+        assert_eq!(retry.attempt_no, 2);
+        assert!(retry.wrapper_path.to_string_lossy().contains("attempt-2"));
+        assert!(retry.stdout_path.to_string_lossy().contains("attempt-2"));
+
+        let original = LocalPlan::build(spec.clone()).unwrap();
+        let (_, mut attempt) = original.run_and_attempt();
+        let legacy_dir = PathBuf::from(&spec.workspace.cwd)
+            .join(".runwatch")
+            .join(&spec.run_id);
+        attempt.script_path = path_text(&legacy_dir.join("attempt-1.ps1"));
+        attempt.stdout_path = path_text(&legacy_dir.join("stdout.log"));
+        attempt.stderr_path = path_text(&legacy_dir.join("stderr.log"));
+        attempt.terminal_path = path_text(&legacy_dir.join("terminal.json"));
+        attempt.receipt_path = path_text(&legacy_dir.join("submission.receipt"));
+        let resumed = LocalPlan::from_attempt(spec, &attempt).unwrap();
+        assert_eq!(resumed.wrapper_path, PathBuf::from(&attempt.script_path));
+        assert_eq!(resumed.stdout_path, PathBuf::from(&attempt.stdout_path));
+        assert_eq!(resumed.terminal_path, PathBuf::from(&attempt.terminal_path));
+        assert_eq!(resumed.run_dir, legacy_dir);
+    }
+
     #[test]
     fn local_binding_accepts_codex_and_rejects_unknown_agents() {
         let workspace = RemoteWorkspaceRef {
@@ -710,6 +836,62 @@ mod tests {
         assert!(validate_binding(&binding, &workspace).is_ok());
         binding.agent_kind = "unknown-agent".into();
         assert!(validate_binding(&binding, &workspace).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "seeds one durable Local Retry intent without launching, for the R17e resident restart acceptance"]
+    fn seed_real_local_retry_intent_without_launch() {
+        let run_id = std::env::var("RUNWATCH_R17E_LOCAL_RUN_ID")
+            .expect("RUNWATCH_R17E_LOCAL_RUN_ID is required for ignored R17e acceptance");
+        let request_id = std::env::var("RUNWATCH_R17E_LOCAL_RETRY_REQUEST")
+            .expect("RUNWATCH_R17E_LOCAL_RETRY_REQUEST is required for ignored R17e acceptance");
+        assert!(
+            std::env::var_os("RUNWATCH_DATA_DIR").is_some(),
+            "RUNWATCH_DATA_DIR must point to the isolated resident acceptance store"
+        );
+        let store = RunStore::open_default().expect("open isolated R17e Local store");
+        let current = store.get(&run_id).unwrap().expect("existing Local Run");
+        assert!(matches!(
+            current.status,
+            RunStatus::Failed | RunStatus::Cancelled
+        ));
+        assert_eq!(current.runner, RunnerKind::Process);
+        let expected_attempt_no = current.attempt_no.expect("current Attempt number");
+        let previous = store
+            .get_attempt(&run_id, expected_attempt_no)
+            .unwrap()
+            .expect("current Local Attempt");
+        let retry = RetryRunSpec {
+            run_id: run_id.clone(),
+            expected_attempt_no,
+            request_id,
+            resources: None,
+        };
+        let submit_spec = SubmitRunSpec {
+            run_id: current.run_id.clone(),
+            name: current.name.clone(),
+            workspace: current.workspace.clone().expect("durable Local workspace"),
+            runner: current.runner,
+            command: previous.command.clone(),
+            resources: previous.resources.clone(),
+            continuation: None,
+        };
+        let next_attempt_no = expected_attempt_no.checked_add(1).unwrap();
+        let plan = LocalPlan::build_for_attempt(submit_spec, next_attempt_no).unwrap();
+        let (desired_run, desired_attempt) = plan.run_and_attempt();
+        assert!(
+            store
+                .create_retry_intent(&retry, &desired_run, &desired_attempt)
+                .expect("persist Local retry intent")
+        );
+        let pending = store.list_pending_retry_intents().unwrap();
+        assert_eq!(pending, vec![retry]);
+        let seeded = store.get(&run_id).unwrap().unwrap();
+        assert_eq!(seeded.status, RunStatus::Submitting);
+        assert_eq!(seeded.attempt_no, Some(next_attempt_no));
+        assert_eq!(seeded.job_id, None);
+        eprintln!("R17E_LOCAL_PENDING_SEEDED run={run_id} attempt={next_attempt_no} handle=NONE");
     }
 
     #[cfg(windows)]

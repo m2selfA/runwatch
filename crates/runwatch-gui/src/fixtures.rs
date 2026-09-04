@@ -1,6 +1,6 @@
-use crate::model::{DashboardSnapshot, HostCardView, RunDetailView, RunRow};
+use crate::model::{DashboardSnapshot, HostCardView, RetryContextView, RunDetailView, RunRow};
 use chrono::{Duration, Utc};
-use runwatch_core::{RunStatus, RunnerKind};
+use runwatch_core::{RunResources, RunStatus, RunnerKind};
 
 pub struct GuiFixture {
     pub snapshot: DashboardSnapshot,
@@ -9,6 +9,7 @@ pub struct GuiFixture {
     pub hosts: Vec<HostCardView>,
     pub service: String,
     pub open_create_dialog: bool,
+    pub open_retry_dialog: bool,
     pub selected_tab: usize,
 }
 
@@ -18,9 +19,62 @@ pub fn named(name: &str) -> Option<GuiFixture> {
         "detail" => Some(build(true, false, false, 0)),
         "offline" => Some(build(false, true, false, 0)),
         "new-run" => Some(build(false, false, true, 0)),
+        "retry" => Some(retry_fixture()),
         "hosts" => Some(build(false, false, false, 1)),
         _ => None,
     }
+}
+
+fn retry_fixture() -> GuiFixture {
+    let mut fixture = build(true, false, false, 0);
+    fixture.open_retry_dialog = true;
+    fixture.snapshot.rows[2] = RunRow {
+        run_id: "run-mask-fit-golden-pine".into(),
+        name: "mask-fit".into(),
+        status: RunStatus::Failed,
+        runner: RunnerKind::Slurm,
+        host: "gm00".into(),
+        handle: "31839".into(),
+        observation: "fresh / scheduler / 1m".into(),
+        continuation: "none".into(),
+        updated: "1m".into(),
+        workspace: "/share/project/mask-fit".into(),
+        active: false,
+        attention: true,
+        attention_reason: Some("Run failed".into()),
+        updated_at: Utc::now() - Duration::seconds(75),
+    };
+    fixture.detail = Some(RunDetailView {
+        run_id: "run-mask-fit-golden-pine".into(),
+        title: "mask-fit".into(),
+        selected_attempt_no: Some(2),
+        attempt_numbers: vec![1, 2],
+        attempt_label: "Attempt 2 · 2/2 · current".into(),
+        overview: "Run ID: run-mask-fit-golden-pine\nStatus: failed\nRunner: Slurm\nHost: gm00\nHandle: 31839\nWorkspace: gm00:/share/project/mask-fit\n\nAttempt history\n#1 failed 31838 · #2 failed 31839\n\nRetry policy\nEligible for human Retry. Command/workspace/runner/host stay fixed; only scheduler resources may be reviewed.".into(),
+        logs: "STDOUT\nloading map...\nR17 fixture expected failure\n\nSTDERR\nresource envelope needs review\n".into(),
+        artifacts: "script\n/share/project/mask-fit/.runwatch/run-mask-fit-golden-pine/attempt-2/run.sh\n\nstdout\n/share/project/mask-fit/.runwatch/run-mask-fit-golden-pine/attempt-2/stdout.log".into(),
+        timeline: "2026-09-04T03:08:00Z  retry_intent\n{\"attempt_no\":2}\n\n2026-09-04T03:10:00Z  scheduler_observed\n{\"status\":\"failed\"}".into(),
+        continuation: "No agent continuation is bound to this Run.".into(),
+        retry_context: Some(RetryContextView {
+            run_id: "run-mask-fit-golden-pine".into(),
+            expected_attempt_no: 2,
+            runner: RunnerKind::Slurm,
+            host: "gm00".into(),
+            workdir: "/share/project/mask-fit".into(),
+            command: "python mask_fit.py --input map.mrc --iterations 12".into(),
+            resources: RunResources {
+                time: Some("02:00:00".into()),
+                partition: Some("gpu".into()),
+                account: Some("science".into()),
+                cpus: Some(8),
+                mem: Some("32G".into()),
+                gpus: Some(1),
+                ..RunResources::default()
+            },
+        }),
+        can_cancel: false,
+    });
+    fixture
 }
 
 fn build(
@@ -87,6 +141,7 @@ fn build(
         daemon_pid: 4242,
         paused: false,
         manual_submit_supported: true,
+        retry_supported: true,
         active: 2,
         attention: 1,
         recent_terminal: 1,
@@ -96,11 +151,15 @@ fn build(
     let detail = with_detail.then(|| RunDetailView {
         run_id: "run-mask-fit-golden-pine".into(),
         title: "mask-fit".into(),
+        selected_attempt_no: Some(1),
+        attempt_numbers: vec![1],
+        attempt_label: "Attempt 1 · 1/1 · current".into(),
         overview: "Run ID: run-mask-fit-golden-pine\nStatus: failed\nRunner: Process\nHost: local\nHandle: local:4242:fixture\nWorkspace: local:C:\\science\\mask-fit\nUpdated: 2026-09-04T03:10:00Z\n\nObservation\nfresh / local process\nobserved: 2026-09-04T03:09:58Z\nraw: EXITED\nreason: process exited with code 1\nexit: 1\n\nAttempt\nattempt 1\nworkdir: C:\\science\\mask-fit\ncommand: python mask_fit.py --input map.mrc\nresources: {}".into(),
         logs: "STDOUT\nloading map...\niteration 1\niteration 2\n\nSTDERR\nfit diverged after iteration 2\n".into(),
         artifacts: "script\nC:\\science\\mask-fit\\.runwatch\\run.ps1\n\nstdout\nC:\\science\\mask-fit\\.runwatch\\stdout.log\n\nstderr\nC:\\science\\mask-fit\\.runwatch\\stderr.log\n\nterminal\nC:\\science\\mask-fit\\.runwatch\\terminal.json".into(),
         timeline: "2026-09-04T03:08:00Z  submission_intent\n{\"attempt_no\":1}\n\n2026-09-04T03:08:02Z  observation_changed\n{\"execution_status\":\"running\"}\n\n2026-09-04T03:10:00Z  terminal\n{\"status\":\"failed\",\"exit_code\":1}".into(),
         continuation: "Agent: pi\nSession: 7df42c...913c\nProject: C:\\science\\mask-fit\nPending: 0  Delivering: 0  Retrying: 0  Needs rebind: 1  Delivered: 0\nLast state: needs_rebind\nLast error: active branch diverged\n\nAction required: return to the bound agent/Pi session and perform an explicit rebind there.".into(),
+        retry_context: None,
         can_cancel: false,
     });
     GuiFixture {
@@ -139,6 +198,7 @@ fn build(
             "runwatchd 0.2.0-dev\nprotocol: 1 · capabilities: 24\npid: 4242\npolling: active\nresident service: enabled\nGUI autostart: enabled\npackage siblings: complete".into()
         },
         open_create_dialog,
+        open_retry_dialog: false,
         selected_tab,
     }
 }

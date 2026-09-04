@@ -1,8 +1,10 @@
 use crate::controller::Command;
 use crate::model::{
-    DashboardSnapshot, RunDetailView, RunFilter, RunRow, RunSort, filter_rows, sort_rows,
+    DashboardSnapshot, RetryContextView, RunDetailView, RunFilter, RunRow, RunSort, filter_rows,
+    sort_rows,
 };
-use crate::submission::{ManualRunDraft, ManualRunner};
+use crate::submission::{ManualRunDraft, ManualRunner, RetryDraft, new_retry_request_id};
+use runwatch_core::RunnerKind;
 use tokio::sync::mpsc;
 use windui::prelude::*;
 
@@ -22,6 +24,9 @@ pub struct RunsViewState {
     selected_id: Signal<String>,
     detail_request: Signal<u64>,
     detail_title: Signal<String>,
+    selected_attempt_no: Signal<u32>,
+    attempt_numbers: Signal<Vec<u32>>,
+    attempt_label: Signal<String>,
     overview: Signal<String>,
     logs: Signal<String>,
     artifacts: Signal<String>,
@@ -33,6 +38,22 @@ pub struct RunsViewState {
     can_cancel: Signal<bool>,
     cancel_dialog: Signal<bool>,
     manual_submit_supported: Signal<bool>,
+    retry_supported: Signal<bool>,
+    retry_available: Signal<bool>,
+    retry_dialog: Signal<bool>,
+    retry_pending: Signal<bool>,
+    retry_message: Signal<String>,
+    retry_run_id: Signal<String>,
+    retry_expected_attempt_no: Signal<u32>,
+    retry_runner: Signal<RunnerKind>,
+    retry_identity: Signal<String>,
+    retry_request_id: Signal<String>,
+    retry_time: Signal<String>,
+    retry_pool: Signal<String>,
+    retry_account: Signal<String>,
+    retry_cpus: Signal<String>,
+    retry_mem: Signal<String>,
+    retry_gpus: Signal<String>,
     create_dialog: Signal<bool>,
     create_runner: Signal<ManualRunner>,
     create_pending: Signal<bool>,
@@ -66,6 +87,9 @@ impl RunsViewState {
             selected_id: signal(String::new()),
             detail_request: signal(0),
             detail_title: signal("Select a Run to inspect".into()),
+            selected_attempt_no: signal(0),
+            attempt_numbers: signal(Vec::new()),
+            attempt_label: signal("No Attempt".into()),
             overview: signal("Double-click a row or use Open.".into()),
             logs: signal("No Run selected.".into()),
             artifacts: signal("No Run selected.".into()),
@@ -77,6 +101,22 @@ impl RunsViewState {
             can_cancel: signal(false),
             cancel_dialog: signal(false),
             manual_submit_supported: signal(false),
+            retry_supported: signal(false),
+            retry_available: signal(false),
+            retry_dialog: signal(false),
+            retry_pending: signal(false),
+            retry_message: signal(String::new()),
+            retry_run_id: signal(String::new()),
+            retry_expected_attempt_no: signal(0),
+            retry_runner: signal(RunnerKind::Process),
+            retry_identity: signal(String::new()),
+            retry_request_id: signal(String::new()),
+            retry_time: signal(String::new()),
+            retry_pool: signal(String::new()),
+            retry_account: signal(String::new()),
+            retry_cpus: signal(String::new()),
+            retry_mem: signal(String::new()),
+            retry_gpus: signal(String::new()),
             create_dialog: signal(false),
             create_runner: signal(ManualRunner::Process),
             create_pending: signal(false),
@@ -97,6 +137,7 @@ impl RunsViewState {
     pub fn apply_snapshot(&self, snapshot: DashboardSnapshot) {
         self.manual_submit_supported
             .set(snapshot.manual_submit_supported);
+        self.retry_supported.set(snapshot.retry_supported);
         self.active.set(snapshot.active.to_string());
         self.attention.set(snapshot.attention.to_string());
         self.recent_terminal
@@ -118,6 +159,8 @@ impl RunsViewState {
 
     pub fn daemon_unavailable(&self, error: String) {
         self.manual_submit_supported.set(false);
+        self.retry_supported.set(false);
+        self.retry_available.set(false);
         self.daemon.set(format!("runwatchd unavailable · {error}"));
     }
 
@@ -125,13 +168,21 @@ impl RunsViewState {
         if request_id != self.detail_request.get() || self.selected_id.get() != detail.run_id {
             return;
         }
+        let retry_context = detail.retry_context.clone();
         self.detail_title.set(detail.title);
+        self.selected_attempt_no
+            .set(detail.selected_attempt_no.unwrap_or_default());
+        self.attempt_numbers.set(detail.attempt_numbers);
+        self.attempt_label.set(detail.attempt_label);
         self.overview.set(detail.overview);
         self.logs.set(detail.logs);
         self.artifacts.set(detail.artifacts);
         self.timeline.set(detail.timeline);
         self.continuation.set(detail.continuation);
         self.can_cancel.set(detail.can_cancel);
+        if !self.retry_dialog.get() {
+            self.apply_retry_context(retry_context);
+        }
     }
 
     pub fn manual_submit_succeeded(&self) {
@@ -154,6 +205,102 @@ impl RunsViewState {
         self.create_pending.set(false);
         self.create_message
             .set(format!("Submission failed: {error}"));
+    }
+
+    fn apply_retry_context(&self, context: Option<RetryContextView>) {
+        let Some(context) = context else {
+            self.retry_available.set(false);
+            self.retry_run_id.set(String::new());
+            self.retry_expected_attempt_no.set(0);
+            self.retry_identity.set(String::new());
+            return;
+        };
+        let resources = context.resources;
+        let pool = match context.runner {
+            RunnerKind::Slurm => resources.partition.clone(),
+            RunnerKind::Lsf => resources.queue.clone(),
+            _ => None,
+        };
+        self.retry_available.set(true);
+        self.retry_run_id.set(context.run_id.clone());
+        self.retry_expected_attempt_no
+            .set(context.expected_attempt_no);
+        self.retry_runner.set(context.runner);
+        self.retry_identity.set(format!(
+            "Run ID: {}\nAttempt: {}\nRunner: {:?}\nHost: {}\nWorkspace: {}\n\nCommand (read-only)\n{}",
+            context.run_id,
+            context.expected_attempt_no,
+            context.runner,
+            context.host,
+            context.workdir,
+            context.command
+        ));
+        self.retry_time.set(resources.time.unwrap_or_default());
+        self.retry_pool.set(pool.unwrap_or_default());
+        self.retry_account
+            .set(resources.account.unwrap_or_default());
+        self.retry_cpus.set(
+            resources
+                .cpus
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        );
+        self.retry_mem.set(resources.mem.unwrap_or_default());
+        self.retry_gpus.set(
+            resources
+                .gpus
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        );
+    }
+
+    fn retry_draft(&self) -> RetryDraft {
+        RetryDraft {
+            run_id: self.retry_run_id.get(),
+            expected_attempt_no: self.retry_expected_attempt_no.get(),
+            request_id: self.retry_request_id.get(),
+            time: self.retry_time.get(),
+            pool: self.retry_pool.get(),
+            account: self.retry_account.get(),
+            cpus: self.retry_cpus.get(),
+            mem: self.retry_mem.get(),
+            gpus: self.retry_gpus.get(),
+        }
+    }
+
+    fn begin_retry_review(&self) -> Result<(), &'static str> {
+        if !self.retry_supported.get() {
+            return Err("This runwatchd does not advertise retry_run_v1");
+        }
+        if !self.retry_available.get() {
+            return Err("This selected Attempt is not eligible for human Retry");
+        }
+        self.retry_request_id.set(new_retry_request_id());
+        self.retry_message.set(
+            "Review the immutable Run identity and scheduler resources. A failed/uncertain retry response keeps the same request identity for safe replay."
+                .into(),
+        );
+        self.retry_dialog.set(true);
+        Ok(())
+    }
+
+    pub fn retry_succeeded(&self) {
+        self.retry_pending.set(false);
+        self.retry_dialog.set(false);
+        self.retry_available.set(false);
+        self.retry_request_id.set(String::new());
+        self.retry_message.set(String::new());
+        self.selected_attempt_no.set(0);
+        self.attempt_label
+            .set("Retry submitted · reload current Attempt".into());
+        self.can_cancel.set(false);
+    }
+
+    pub fn retry_failed(&self, error: String) {
+        self.retry_pending.set(false);
+        self.retry_message.set(format!(
+            "Retry failed: {error}\nThe same request identity is retained; retrying this dialog is idempotent."
+        ));
     }
 
     fn manual_draft(&self) -> ManualRunDraft {
@@ -199,6 +346,19 @@ impl RunsViewState {
         self.create_dialog.set(true);
     }
 
+    #[cfg(debug_assertions)]
+    pub fn apply_fixture_retry_dialog(&self) {
+        if !self.retry_available.get() {
+            return;
+        }
+        self.retry_request_id.set("gui-retry-fixture-01".into());
+        self.retry_message.set(
+            "Fixture preview: immutable Run identity is read-only; scheduler resources are the only editable retry envelope."
+                .into(),
+        );
+        self.retry_dialog.set(true);
+    }
+
     fn rebuild_visible(&self) {
         let mut rows = filter_rows(&self.all_rows.get(), self.filter.get(), &self.query.get());
         sort_rows(&mut rows, self.sort.get());
@@ -217,6 +377,7 @@ impl RunsViewState {
     fn request_detail(
         &self,
         run_id: String,
+        attempt_no: Option<u32>,
         tail: usize,
         event_limit: usize,
         commands: &mpsc::UnboundedSender<Command>,
@@ -225,6 +386,7 @@ impl RunsViewState {
         let _ = commands.send(Command::LoadDetail {
             request_id,
             run_id,
+            attempt_no,
             tail,
             event_limit,
         });
@@ -235,10 +397,14 @@ impl RunsViewState {
             return;
         };
         self.selected_id.set(run_id.clone());
+        self.selected_attempt_no.set(0);
+        self.attempt_numbers.set(Vec::new());
+        self.attempt_label.set("Loading current Attempt...".into());
         self.detail_title.set(format!("Loading {run_id}..."));
         self.can_cancel.set(false);
         self.request_detail(
             run_id,
+            None,
             self.log_tail.get(),
             self.event_limit.get(),
             commands,
@@ -257,7 +423,13 @@ impl RunsViewState {
         self.log_tail.set(tail);
         let run_id = self.selected_id.get();
         if !run_id.is_empty() {
-            self.request_detail(run_id, tail, self.event_limit.get(), commands);
+            self.request_detail(
+                run_id,
+                (self.selected_attempt_no.get() > 0).then_some(self.selected_attempt_no.get()),
+                tail,
+                self.event_limit.get(),
+                commands,
+            );
         }
     }
 
@@ -267,11 +439,44 @@ impl RunsViewState {
         if !run_id.is_empty() {
             self.request_detail(
                 run_id,
+                (self.selected_attempt_no.get() > 0).then_some(self.selected_attempt_no.get()),
                 self.log_tail.get(),
                 self.event_limit.get(),
                 commands,
             );
         }
+    }
+
+    fn move_attempt(&self, delta: isize, commands: &mpsc::UnboundedSender<Command>) -> bool {
+        let attempts = self.attempt_numbers.get();
+        if attempts.is_empty() {
+            return false;
+        }
+        let selected = self.selected_attempt_no.get();
+        let current = attempts
+            .iter()
+            .position(|value| *value == selected)
+            .unwrap_or(attempts.len().saturating_sub(1));
+        let next = current as isize + delta;
+        if next < 0 || next >= attempts.len() as isize {
+            return false;
+        }
+        let attempt_no = attempts[next as usize];
+        let run_id = self.selected_id.get();
+        if run_id.is_empty() {
+            return false;
+        }
+        self.selected_attempt_no.set(attempt_no);
+        self.attempt_label
+            .set(format!("Loading Attempt {attempt_no}..."));
+        self.request_detail(
+            run_id,
+            Some(attempt_no),
+            self.log_tail.get(),
+            self.event_limit.get(),
+            commands,
+        );
+        true
     }
 
     pub fn build(&self, commands: mpsc::UnboundedSender<Command>) -> Element {
@@ -457,6 +662,13 @@ impl RunsViewState {
         let copy_handle_state = self.clone();
         let copy_workspace_state = self.clone();
         let cancel_state = self.clone();
+        let older_attempt_state = self.clone();
+        let older_attempt_commands = commands.clone();
+        let newer_attempt_state = self.clone();
+        let newer_attempt_commands = commands.clone();
+        let retry_open_state = self.clone();
+        let retry_visible_supported = self.retry_supported;
+        let retry_visible_available = self.retry_available;
         let detail_header = Element::row()
             .width_match()
             .cross(Align::Center)
@@ -468,6 +680,33 @@ impl RunsViewState {
                     .weight(1.0),
             )
             .child(
+                Element::label_signal(self.attempt_label)
+                    .font_size(12.0)
+                    .fg(Color::hex(0x5B6B75)),
+            )
+            .child(
+                Element::button("← Attempt")
+                    .neutral()
+                    .outline()
+                    .small()
+                    .on_click(move |ctx| {
+                        if !older_attempt_state.move_attempt(-1, &older_attempt_commands) {
+                            ctx.toast("No earlier Attempt");
+                        }
+                    }),
+            )
+            .child(
+                Element::button("Attempt →")
+                    .neutral()
+                    .outline()
+                    .small()
+                    .on_click(move |ctx| {
+                        if !newer_attempt_state.move_attempt(1, &newer_attempt_commands) {
+                            ctx.toast("No later Attempt");
+                        }
+                    }),
+            )
+            .child(
                 Element::button("Reload")
                     .neutral()
                     .outline()
@@ -477,6 +716,8 @@ impl RunsViewState {
                         if !run_id.is_empty() {
                             detail_state.request_detail(
                                 run_id,
+                                (detail_state.selected_attempt_no.get() > 0)
+                                    .then_some(detail_state.selected_attempt_no.get()),
                                 detail_state.log_tail.get(),
                                 detail_state.event_limit.get(),
                                 &detail_commands,
@@ -536,6 +777,19 @@ impl RunsViewState {
                             ctx.clipboard_set(&row.workspace);
                             ctx.toast("Workspace copied");
                         }
+                    }),
+            )
+            .child(
+                Element::button("Retry Run")
+                    .outline()
+                    .small()
+                    .on_click(move |ctx| {
+                        if let Err(message) = retry_open_state.begin_retry_review() {
+                            ctx.toast(message);
+                        }
+                    })
+                    .visible_when(move || {
+                        retry_visible_supported.get() && retry_visible_available.get()
                     }),
             )
             .child(
@@ -709,6 +963,127 @@ impl RunsViewState {
                                     cancel_dialog_state.cancel_dialog.set(false);
                                 }),
                         ),
+                ),
+        );
+
+        let retry_back_state = self.clone();
+        let retry_submit_state = self.clone();
+        let retry_commands = commands.clone();
+        let retry_resources_visible = self.retry_runner;
+        let retry_process_hint_visible = self.retry_runner;
+        let retry_form = Element::col()
+            .width_match()
+            .spacing(9)
+            .child(
+                Element::label("Run identity (read-only)")
+                    .fg(Color::hex(0x5B6B75))
+                    .width_match(),
+            )
+            .child(readonly_text(self.retry_identity, true).height(160))
+            .child(
+                Element::label(
+                    "Retry keeps Run ID, command, workspace, runner and host unchanged. Scheduler fields below are the only editable execution envelope.",
+                )
+                .font_size(12.0)
+                .fg(Color::hex(0x5B6B75))
+                .width_match(),
+            )
+            .child(
+                Element::label(
+                    "Local Process has no scheduler resource envelope; Attempt N+1 reuses the same command and workspace.",
+                )
+                .font_size(12.0)
+                .fg(Color::hex(0x5B6B75))
+                .width_match()
+                .visible_when(move || retry_process_hint_visible.get() == RunnerKind::Process),
+            )
+            .child(
+                Element::col()
+                    .width_match()
+                    .spacing(6)
+                    .child(form_field("Time", self.retry_time, "e.g. 02:00:00"))
+                    .child(form_field(
+                        "Partition / queue",
+                        self.retry_pool,
+                        "Slurm partition or LSF queue",
+                    ))
+                    .child(form_field("Account", self.retry_account, "Optional"))
+                    .child(form_field("CPUs", self.retry_cpus, "Optional positive integer"))
+                    .child(form_field("Memory", self.retry_mem, "e.g. 32G"))
+                    .child(form_field("GPUs", self.retry_gpus, "Optional positive integer"))
+                    .visible_when(move || retry_resources_visible.get() != RunnerKind::Process),
+            );
+        let retry_dialog = Element::dialog(
+            self.retry_dialog,
+            Element::col()
+                .width(700)
+                .height(560)
+                .bg(Color::hex(0xFFFDF8))
+                .corner(14.0)
+                .padding(20)
+                .spacing(9)
+                .child(
+                    Element::label("Retry current Attempt")
+                        .font_size(20.0)
+                        .fg(Color::hex(0x243746))
+                        .width_match(),
+                )
+                .child(
+                    Element::label(
+                        "runwatchd allocates the next Attempt durably. This review never edits the logical Run identity and never attaches or changes an agent continuation.",
+                    )
+                    .font_size(12.5)
+                    .fg(Color::hex(0x5B6B75))
+                    .width_match(),
+                )
+                .child(Element::scroll().width_match().weight(1.0).child(retry_form))
+                .child(
+                    Element::label_signal(self.retry_message)
+                        .font_size(12.0)
+                        .fg(Color::hex(0xB27A1B))
+                        .width_match(),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .spacing(8)
+                        .child(Element::label("").weight(1.0))
+                        .child(Element::button("Back").neutral().on_click(move |ctx| {
+                            if retry_back_state.retry_pending.get() {
+                                ctx.toast("Retry submission is in progress");
+                            } else {
+                                retry_back_state.retry_dialog.set(false);
+                                retry_back_state.retry_request_id.set(String::new());
+                                retry_back_state.retry_message.set(String::new());
+                            }
+                        }))
+                        .child(Element::button("Retry Run").on_click(move |ctx| {
+                            if retry_submit_state.retry_pending.get() {
+                                ctx.toast("Retry submission is already in progress");
+                                return;
+                            }
+                            let runner = retry_submit_state.retry_runner.get();
+                            match retry_submit_state.retry_draft().build_spec(runner) {
+                                Ok(spec) => {
+                                    let next_attempt = spec.expected_attempt_no.saturating_add(1);
+                                    let request_id = spec.request_id.clone();
+                                    retry_submit_state.retry_pending.set(true);
+                                    retry_submit_state.retry_message.set(format!(
+                                        "Creating Attempt {next_attempt} with durable request {request_id}..."
+                                    ));
+                                    if retry_commands.send(Command::Retry(spec)).is_err() {
+                                        retry_submit_state.retry_pending.set(false);
+                                        retry_submit_state.retry_message.set(
+                                            "Retry failed: GUI controller is unavailable. The request identity is retained."
+                                                .into(),
+                                        );
+                                    }
+                                }
+                                Err(error) => retry_submit_state
+                                    .retry_message
+                                    .set(format!("Check the resource review: {error:#}")),
+                            }
+                        })),
                 ),
         );
 
@@ -897,6 +1272,7 @@ impl RunsViewState {
                     .child(detail_tabs),
             )
             .child(cancel_dialog)
+            .child(retry_dialog)
             .child(create_dialog)
     }
 }
@@ -940,11 +1316,15 @@ mod tests {
         RunDetailView {
             run_id: run_id.into(),
             title: title.into(),
+            selected_attempt_no: Some(1),
+            attempt_numbers: vec![1],
+            attempt_label: "Attempt 1 · 1/1 · current".into(),
             overview: format!("overview-{title}"),
             logs: format!("logs-{title}"),
             artifacts: format!("artifacts-{title}"),
             timeline: format!("timeline-{title}"),
             continuation: format!("continuation-{title}"),
+            retry_context: None,
             can_cancel: true,
         }
     }
@@ -967,5 +1347,28 @@ mod tests {
         assert_eq!(state.detail_title.get(), "new-b");
         state.apply_detail(4, detail("run-b", "new-tail"));
         assert_eq!(state.detail_title.get(), "new-tail");
+    }
+
+    #[test]
+    fn retry_dialog_keeps_request_identity_after_failure_and_clears_only_after_success() {
+        let state = RunsViewState::new();
+        state.retry_supported.set(true);
+        state.retry_available.set(true);
+        state.retry_dialog.set(true);
+        state.retry_pending.set(true);
+        state.retry_request_id.set("gui-retry-stable-01".into());
+
+        state.retry_failed("simulated response loss".into());
+        assert!(state.retry_dialog.get());
+        assert!(!state.retry_pending.get());
+        assert_eq!(state.retry_request_id.get(), "gui-retry-stable-01");
+        assert!(state.retry_message.get().contains("idempotent"));
+
+        state.retry_pending.set(true);
+        state.retry_succeeded();
+        assert!(!state.retry_dialog.get());
+        assert!(!state.retry_pending.get());
+        assert!(state.retry_request_id.get().is_empty());
+        assert!(!state.retry_available.get());
     }
 }
