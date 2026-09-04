@@ -55,6 +55,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R13 | Human Run Console GUI redesign | **completed 2026-09-04 — packaged Limited-user desktop acceptance closed for dashboard/detail/logs/probe/cancel/Service/hide; R13d dynamic tray tooltip/native background notification remains explicitly deferred behind WindUI 0.14 public API** |
 | R14 | Manual Human Run submission + GUI CI gate | **completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; fresh GitHub CI #33854434483 passed Windows four-fixture rendering/package and Linux glibc 2.17 gates** |
 | R15 | GUI layout polish: single-line Run headers + responsive Host cards | **completed 2026-09-04 — 1080×720 Continuation header is single-line; Hosts use equal-size longest-content cards and responsive columns; fresh GitHub CI #33857831526 passed 127 tests, seven viewport fixture cases, Windows package and Linux glibc 2.17 gates** |
+| R16 | v0.2.0 release closure | **in progress 2026-09-04 — freeze R15 runtime; packaged ordinary-desktop New Run acceptance, v0.1.0→v0.2.0 upgrade preservation, release docs/fresh CI/tag/GitHub Release** |
 
 ## R0 completion record
 
@@ -144,7 +145,7 @@ Landed slices:
 - [x] Real same-user ACL smoke passed after hardening: an isolated daemon accepted `daemon-status` and `list` from a separate CLI process through the restricted named pipe.
 - [x] Retired legacy shell-string callbacks without breaking historical data import. The v1 cleanup later removed `RunRecord.on_complete/on_success/on_failure/acked_at` from the current Rust model, JSON schema and MCP output schema entirely; serde still ignores those historical fields during the one-time `runs.jsonl` import. `runwatch-engine` contains no callback shell execution; hidden CLI `--on-success/--on-failure` flags fail explicitly before daemon/SSH access. Durable continuation uses explicit Delivery/outbox state only.
 - [x] Final authority scan: CLI/GUI/MCP contain **zero** `RunStore` references; GUI/MCP contain **zero** `serve_loop` references; MCP contains **zero** `HostPool` references. CLI `Status` only computes the ledger path and does not open SQLite.
-- [ ] Full MCP protocol modernization remains intentionally separate from R1c authority migration: the compatibility server still speaks the legacy `2024-11-05` handshake. Upgrade it coherently to the current 2026-07-28 MCP model/SDK and Tasks extension rather than changing only the advertised version.
+- [x] **Historical R1 follow-up is superseded/closed by R8b:** MCP protocol modernization later moved to `rmcp 3.1.4`, negotiated the 2026-07-28 Discovery/Tasks model while retaining legacy initialize compatibility, added typed `outputSchema` for 9/9 tools, and passed real stdio wire acceptance. This is not a current release blocker.
 
 ### R1 round closeout validation — 2026-08-31
 
@@ -426,7 +427,7 @@ Remaining R8:
 
 - [x] MCP modernization completed in R8b with `rmcp 3.1.4`, 2026-07-28 Discovery/Tasks, legacy negotiation, 9/9 typed outputSchema and real stdio wire acceptance.
 - [x] Installed-task resident start/recovery acceptance completed in R8c, including child crash, supervisor crash, Task Scheduler reconciliation and Job Object cleanup.
-- [ ] Multi-hour resident daemon/HPC soak remains release hardening rather than a state-machine correctness blocker.
+- [x] **Historical R8 follow-up is superseded/closed by R11d:** formal current-binary endurance authority #11 qualified at **7800.220 s / 11 rounds / 22 real Local+Slurm cases / 0 failed segments**, including 11 serve restarts, 5 SSH recoveries, 5 branch-rebind recoveries and 3 completion-before-settlement crash recoveries.
 
 ### Current round validation — 2026-09-01
 
@@ -838,6 +839,24 @@ This block is visual/product polish only; it does not widen GUI authority. Host 
 - [x] Final local workspace gates: `cargo fmt -- --check` pass; `cargo check --all-targets` pass; `cargo test --all-targets` **127 passed / 0 failed / 8 ignored**. The only compiler note remains the pre-existing `russh 0.54.5` future-incompatibility warning.
 
 Fresh-runner proof is closed for implementation commit `e66286b2b36c26ca6424562053a0b6b3075af6d6` in GitHub Actions **#33857831526**. Linux `glibc 2.17` completed successfully in **4m16s** including binary upload. Windows `windows-2022` completed in **12m03s** and passed formatting, workspace check, **127 tests / 0 failed / 8 ignored**, the expanded GUI software-render matrix (`dashboard/detail/offline/new-run/hosts` at 1080×720 plus Hosts at 760×720 and 1440×900), optimized package, package verification and artifact upload. The Windows artifact is ID **9931270592**, **10,292,196 bytes**, digest `sha256:47037070bbcfed11c0d741dcbb8c25660f1e5a2f840256300f5089df707caffb`; its inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,302,811 bytes**, SHA-256 `3b1b13ced14d98892fa954814079dc5575b3d8504be5c9248027dac61229aeec`. The Linux artifact is ID **9931026352**, **6,127,187 bytes**, digest `sha256:32c365090237982812cfb333300df2f55ed6717d73c52362bdcd0ae9c90bc5bd`. The only workflow annotations are GitHub platform notices that Node 20-based `actions/checkout@v4` / `actions/upload-artifact@v4` are being forced onto Node 24; they are not project failures.
+
+## R16 current work
+
+### R16 — v0.2.0 release closure — started 2026-09-04
+
+R16 is a release-only closure block. The R15 runtime is frozen unless acceptance exposes a concrete release blocker; do not begin retry/resubmit/Attempt UI, tray-notification framework work, or new Agent Integration productization inside this phase.
+
+Release gates and evidence:
+
+- [x] Built and verified the post-fix local candidate `runwatch-v0.2.0-windows-x86_64.zip`: **10,359,397 bytes**, SHA-256 `0e0d52d01c4a000aa3918a7231c205f11f8c90de1fb24397745abb3ef428f9bd`; `xtask verify` reports `ok=true`, files=5, version `0.2.0`, platform `windows-x86_64`.
+- [x] R16 acceptance found and fixed a real default-window release blocker in `New Run`: the full Slurm/LSF form could extend below 1080×720 and clip the footer. The form body is now a bounded scroll region inside a 580px dialog while Back/Start Run stay pinned. Windows CI now additionally requires at least 100 exact app-accent pixels in the lower-right `new-run` footer region, so a merely-valid PNG can no longer hide a clipped Start Run action.
+- [x] The exact final local package above was exercised from the ordinary **Limited `CAP00\\inter` RDP Session 2** through its packaged GUI against an isolated packaged daemon. All three GUI-created Runs were unbound (`continuation_bindings=0`) and converged with synchronized durable Attempt state: Local `manual-write-output-r16-gui-loc-20260904-102422-fb5049` -> `succeeded`, stdout `R16_GUI_LOCAL_OK`; gm00 Slurm `manual-echo-r16-gui-slurm-ok-sl-20260904-102435-4d0b1d` -> Job **31838** -> `succeeded`, stdout `R16_GUI_SLURM_OK`; gyz-mn02 IBM LSF 10.1 `manual-echo-r16-gui-lsf-ok-lsf-20260904-102448-218ced` -> Job **79289** -> `succeeded`, stdout contains `R16_GUI_LSF_OK` from shared `/scem/work/gaoyz/runwatch-r16-release`.
+- [x] Real v0.1.0 -> final v0.2.0 package replacement passed on isolated state without touching the user's production `runwatchd` registration. The frozen historical v0.1 ZIP first re-verified at SHA-256 `3b67fae3055bed5765ae587fd9b27d228ea84fb47f1a0c4c377a0317591e426f`. Its daemon submitted gm00 Slurm Job **31837** (`sleep 45; echo R16_UPGRADE_FINAL_OK`), which was confirmed RUNNING before the old supervisor stopped. The entire sibling install directory was then replaced by the final 0.2.0 package, the same SQLite/named-pipe authority restarted as version 0.2.0, and the same Run remained `running` on the same JobID before converging to `succeeded`; bounded logs returned `R16_UPGRADE_FINAL_OK`, schema remained 2, and exactly one Run/Attempt survived the maintenance gap. Fixed-name Task Scheduler registration/removal itself is not duplicated in this isolated gate because R13 already real-qualified ordinary-user disable/re-enable, PT1M non-resurrection and elevated-install ACL semantics on the actual registration.
+- [x] The first upgrade replay also exposed a durable consistency gap: scheduler transitions updated `RunRecord` but left `RunAttemptRecord.status` at its submission state (`queued`), unlike Local Process. Remote transitions now persist Run + current Attempt atomically with a `scheduler_observed` Event. The final Job 31837 replay proves `Run=succeeded / Attempt=succeeded / JobID=31837` after the version transition.
+- [x] Reconciled two stale historical unchecked boxes: MCP modernization was completed in R8b, and the multi-hour daemon/HPC soak was completed by R11 authority #11. Neither is a current blocker.
+- [x] Added `docs/RELEASE_NOTES_v0.2.0.md` and `docs/V0.2_RELEASE_CANDIDATE.md`. Final local workspace closeout is green: `cargo fmt --all -- --check` pass; `cargo check --all-targets` pass; `cargo test --all-targets` remains **127 passed / 0 failed / 8 ignored**; `git diff --check` pass. The CI-equivalent software-render matrix also passed: dashboard **51,175 B**, detail **54,842 B**, offline **51,982 B**, new-run **65,164 B**, hosts **47,744 B** at 1080×720; Hosts **44,828 B** at 760×720 and **51,302 B** at 1440×900; the new lower-right footer probe counted **3,016** primary-action accent pixels (required >=100). Temporary fixture PNGs were removed.
+- [ ] Push the final implementation/release-document tree and close a fresh GitHub Actions Windows + Linux matrix; download/hash/verify the fresh Windows inner ZIP and record artifact evidence.
+- [ ] Only after fresh CI is green: create/push an annotated `v0.2.0` tag and publish a GitHub Release containing the exact verified Windows ZIP. Preserve historical `v0.1.0` tag/package/endurance evidence unchanged.
 
 ## Known transitional debt
 

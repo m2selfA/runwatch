@@ -77,6 +77,29 @@ jobs:
           foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'hosts')) {
             Render-Fixture $fixture 1080 720 $fixture
           }
+          # A successful PNG alone is not enough for the tall scheduler form: the
+          # R16 release gate requires the pinned primary Start Run action to be
+          # visibly inside the default viewport. WindUI's primary surface uses
+          # the app accent RGB 76/139/245; count it only in the lower-right
+          # footer region so the Local Process runner button cannot satisfy it.
+          $newRunPng = Join-Path $fixtureDir 'new-run.png'
+          $newRunImage = [System.Drawing.Bitmap]::FromFile($newRunPng)
+          try {
+            $footerAccentPixels = 0
+            for ($y = 540; $y -lt [Math]::Min(710, $newRunImage.Height); $y++) {
+              for ($x = 600; $x -lt [Math]::Min(900, $newRunImage.Width); $x++) {
+                $pixel = $newRunImage.GetPixel($x, $y)
+                if ($pixel.R -eq 76 -and $pixel.G -eq 139 -and $pixel.B -eq 245) {
+                  $footerAccentPixels++
+                }
+              }
+            }
+            if ($footerAccentPixels -lt 100) {
+              throw "New Run primary footer action is clipped at 1080x720 ($footerAccentPixels accent pixels)"
+            }
+          } finally {
+            $newRunImage.Dispose()
+          }
           Render-Fixture 'hosts' 760 720 'hosts-narrow'
           Render-Fixture 'hosts' 1440 900 'hosts-wide'
           Remove-Item Env:RUNWATCH_GUI_FIXTURE -ErrorAction SilentlyContinue

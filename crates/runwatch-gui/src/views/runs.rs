@@ -721,10 +721,100 @@ impl RunsViewState {
         let create_back_state = self.clone();
         let create_submit_state = self.clone();
         let create_commands = commands.clone();
+        let create_form = Element::col()
+            .width_match()
+            .spacing(9)
+            .child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(7)
+                    .child(Element::label("Runner").width(120))
+                    .child(Element::button("Local Process").small().on_click(move |_| {
+                        runner_process_state
+                            .create_runner
+                            .set(ManualRunner::Process);
+                    }))
+                    .child(
+                        Element::button("Slurm")
+                            .neutral()
+                            .small()
+                            .on_click(move |_| {
+                                runner_slurm_state.create_runner.set(ManualRunner::Slurm);
+                            }),
+                    )
+                    .child(
+                        Element::button("LSF")
+                            .neutral()
+                            .small()
+                            .on_click(move |_| {
+                                runner_lsf_state.create_runner.set(ManualRunner::Lsf);
+                            }),
+                    ),
+            )
+            .child(form_field(
+                "Name",
+                self.create_name,
+                "Optional; a readable name is generated when empty",
+            ))
+            .child(
+                form_field(
+                    "SSH Host alias",
+                    self.create_host,
+                    "Exact Host from ~/.ssh/config, e.g. gm00",
+                )
+                .visible_when(move || remote_host_visible.get() != ManualRunner::Process),
+            )
+            .child(form_field(
+                "Workspace",
+                self.create_cwd,
+                "Existing absolute local directory, or remote POSIX path",
+            ))
+            .child(
+                Element::label(
+                    "Remote scheduler workspaces must be persistent and shared between the login host and compute nodes; node-local /tmp is not a safe default.",
+                )
+                .font_size(11.5)
+                .fg(Color::hex(0xB27A1B))
+                .width_match()
+                .visible_when(move || remote_hint_visible.get() != ManualRunner::Process),
+            )
+            .child(
+                Element::col()
+                    .width_match()
+                    .spacing(4)
+                    .child(Element::label("Command").fg(Color::hex(0x5B6B75)))
+                    .child(
+                        Element::text_input(
+                            self.create_command,
+                            "PowerShell command locally; shell command under Slurm/LSF",
+                        )
+                        .multiline()
+                        .wrap(true)
+                        .width_match(),
+                    ),
+            )
+            .child(
+                Element::col()
+                    .width_match()
+                    .spacing(6)
+                    .child(form_field("Time", self.create_time, "e.g. 02:00:00"))
+                    .child(form_field(
+                        "Partition / queue",
+                        self.create_pool,
+                        "Slurm partition or LSF queue",
+                    ))
+                    .child(form_field("Account", self.create_account, "Optional"))
+                    .child(form_field("CPUs", self.create_cpus, "Optional positive integer"))
+                    .child(form_field("Memory", self.create_mem, "e.g. 32G"))
+                    .child(form_field("GPUs", self.create_gpus, "Optional positive integer"))
+                    .visible_when(move || remote_resources_visible.get() != ManualRunner::Process),
+            );
         let create_dialog = Element::dialog(
             self.create_dialog,
             Element::col()
                 .width(720)
+                .height(580)
                 .bg(Color::hex(0xFFFDF8))
                 .corner(14.0)
                 .padding(20)
@@ -743,94 +833,7 @@ impl RunsViewState {
                     .fg(Color::hex(0x5B6B75))
                     .width_match(),
                 )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(7)
-                        .child(Element::label("Runner").width(120))
-                        .child(Element::button("Local Process").small().on_click(move |_| {
-                            runner_process_state
-                                .create_runner
-                                .set(ManualRunner::Process);
-                        }))
-                        .child(
-                            Element::button("Slurm")
-                                .neutral()
-                                .small()
-                                .on_click(move |_| {
-                                    runner_slurm_state.create_runner.set(ManualRunner::Slurm);
-                                }),
-                        )
-                        .child(
-                            Element::button("LSF")
-                                .neutral()
-                                .small()
-                                .on_click(move |_| {
-                                    runner_lsf_state.create_runner.set(ManualRunner::Lsf);
-                                }),
-                        ),
-                )
-                .child(form_field(
-                    "Name",
-                    self.create_name,
-                    "Optional; a readable name is generated when empty",
-                ))
-                .child(
-                    form_field(
-                        "SSH Host alias",
-                        self.create_host,
-                        "Exact Host from ~/.ssh/config, e.g. gm00",
-                    )
-                    .visible_when(move || remote_host_visible.get() != ManualRunner::Process),
-                )
-                .child(form_field(
-                    "Workspace",
-                    self.create_cwd,
-                    "Existing absolute local directory, or remote POSIX path",
-                ))
-                .child(
-                    Element::label(
-                        "Remote scheduler workspaces must be persistent and shared between the login host and compute nodes; node-local /tmp is not a safe default.",
-                    )
-                    .font_size(11.5)
-                    .fg(Color::hex(0xB27A1B))
-                    .width_match()
-                    .visible_when(move || remote_hint_visible.get() != ManualRunner::Process),
-                )
-                .child(
-                    Element::col()
-                        .width_match()
-                        .spacing(4)
-                        .child(Element::label("Command").fg(Color::hex(0x5B6B75)))
-                        .child(
-                            Element::text_input(
-                                self.create_command,
-                                "PowerShell command locally; shell command under Slurm/LSF",
-                            )
-                            .multiline()
-                            .wrap(true)
-                            .width_match(),
-                        ),
-                )
-                .child(
-                    Element::col()
-                        .width_match()
-                        .spacing(6)
-                        .child(form_field("Time", self.create_time, "e.g. 02:00:00"))
-                        .child(form_field(
-                            "Partition / queue",
-                            self.create_pool,
-                            "Slurm partition or LSF queue",
-                        ))
-                        .child(form_field("Account", self.create_account, "Optional"))
-                        .child(form_field("CPUs", self.create_cpus, "Optional positive integer"))
-                        .child(form_field("Memory", self.create_mem, "e.g. 32G"))
-                        .child(form_field("GPUs", self.create_gpus, "Optional positive integer"))
-                        .visible_when(move || {
-                            remote_resources_visible.get() != ManualRunner::Process
-                        }),
-                )
+                .child(Element::scroll().width_match().weight(1.0).child(create_form))
                 .child(
                     Element::label_signal(self.create_message)
                         .font_size(12.0)

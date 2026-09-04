@@ -137,7 +137,15 @@ fn persist_remote_transition(
     let from = rec.status;
     rec.status = next;
     rec.updated_at = Utc::now();
-    store.upsert(rec)?;
+    if let Some(attempt_no) = rec.attempt_no
+        && let Some(mut attempt) = store.get_attempt(&rec.run_id, attempt_no)?
+    {
+        attempt.status = next;
+        attempt.updated_at = rec.updated_at;
+        store.persist_run_attempt_event(rec, &attempt, "scheduler_observed")?;
+    } else {
+        store.upsert(rec)?;
+    }
     if next.is_terminal() {
         let _ = store.ensure_terminal_delivery(rec)?;
     }
