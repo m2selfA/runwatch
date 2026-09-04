@@ -2,6 +2,7 @@ use crate::model::{RunDetailView, build_detail};
 use anyhow::{Context, Result, anyhow};
 use runwatch_core::{
     ObservationRecord, RunAttemptRecord, RunContinuationStatus, RunEventRecord, RunRecord,
+    SubmitRunSpec,
 };
 use serde_json::{Value, json};
 
@@ -11,6 +12,7 @@ pub struct SnapshotPayload {
     pub capability_count: usize,
     pub pid: u64,
     pub paused: bool,
+    pub manual_submit_supported: bool,
     pub runs: Vec<RunRecord>,
     pub observations: Vec<ObservationRecord>,
     pub continuations: Vec<RunContinuationStatus>,
@@ -22,6 +24,13 @@ pub async fn snapshot() -> Result<SnapshotPayload> {
         runwatch_engine::ipc::call_local("daemon_status", json!({})),
         runwatch_engine::ipc::call_local("list_runs", json!({})),
     )?;
+    let capabilities = hello.get("capabilities").and_then(Value::as_array);
+    let capability_count = capabilities.map(Vec::len).unwrap_or_default();
+    let manual_submit_supported = capabilities.is_some_and(|values| {
+        values
+            .iter()
+            .any(|value| value.as_str() == Some("submit_run_v2"))
+    });
     Ok(SnapshotPayload {
         version: hello
             .get("version")
@@ -32,16 +41,13 @@ pub async fn snapshot() -> Result<SnapshotPayload> {
             .get("protocol_version")
             .and_then(Value::as_u64)
             .unwrap_or_default(),
-        capability_count: hello
-            .get("capabilities")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or_default(),
+        capability_count,
         pid: state.get("pid").and_then(Value::as_u64).unwrap_or_default(),
         paused: state
             .get("paused")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        manual_submit_supported,
         runs: parse_field(&rows, "runs")?,
         observations: parse_field(&rows, "observations")?,
         continuations: rows
@@ -55,6 +61,11 @@ pub async fn snapshot() -> Result<SnapshotPayload> {
 pub async fn set_paused(paused: bool) -> Result<()> {
     runwatch_engine::ipc::call_local("set_paused", json!({ "paused": paused })).await?;
     Ok(())
+}
+
+pub async fn submit_manual(spec: SubmitRunSpec) -> Result<RunRecord> {
+    let value = runwatch_engine::ipc::call_local("submit_run_v2", json!({ "spec": spec })).await?;
+    parse_field(&value, "run")
 }
 
 pub async fn cancel_run(run_id: &str) -> Result<()> {

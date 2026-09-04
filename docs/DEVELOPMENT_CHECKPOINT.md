@@ -53,6 +53,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
 | R12 | Post-v0.1 portability CI + GUI polish | **completed 2026-09-04 — Windows package CI + Linux glibc 2.17 artifact gate green; GUI `ssh -G` console flashing fixed** |
 | R13 | Human Run Console GUI redesign | **completed 2026-09-04 — packaged Limited-user desktop acceptance closed for dashboard/detail/logs/probe/cancel/Service/hide; R13d dynamic tray tooltip/native background notification remains explicitly deferred behind WindUI 0.14 public API** |
+| R14 | Manual Human Run submission + GUI CI gate | **R14a/R14b locally completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; Windows CI now renders four critical GUI fixtures; fresh GitHub run pending implementation commit** |
 
 ## R0 completion record
 
@@ -780,14 +781,45 @@ Frozen R13 product boundary remains unchanged:
 - [x] Post-acceptance implementation commit `c2938111436a130803ee8637c422e62ba933d5b0` closed green in fresh GitHub Actions workflow **33849095888**. Windows `windows-2022` passed NASM -> fmt/check -> **120 tests** -> optimized package -> `xtask verify` -> artifact upload. Its inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,261,493 bytes**, SHA-256 `e79ca8f825e892113af046e56b81736767f417e325551a8a0fb19c0d63a5ea5e`; verify reports `ok=true`, files=5, version `0.2.0`, platform `windows-x86_64`. GitHub artifact ID **9927939074** is **10,250,354 bytes**, digest `sha256:5c4913906373bd0d37f46c2bd33c9fb90bca8b47fba64e5e2dffd9864e8aea9f`.
 - [x] The same workflow's Linux manylinux2014 job passed check/test/release plus the final ELF ABI gate: `runwatch` and `runwatch-mcp` both require at most **GLIBC_2.16 <= GLIBC_2.17**. Linux artifact ID **9927758980** is **6,127,187 bytes**, digest `sha256:4d1b3dd83e007d98f425826aad0e78919ed72bbde540b43eb32d08002e6e5383`.
 
-Deferred until the console is stable:
+Deferred beyond the now-stable console:
 
-- manual GUI Run authoring/submission wizard;
 - retry/resubmit semantics and Attempt management UI;
 - arbitrary remote shell/file editing;
 - scheduler-cluster administration/resource dashboards;
 - GUI-initiated agent branch rebind or Delivery force-ack;
 - framework migration away from WindUI without a demonstrated blocker.
+
+## R14 current work
+
+### R14a — manual Human Run authoring/submission — locally completed 2026-09-04
+
+Scope is deliberately agent-neutral. A Run created by the desktop GUI is a human-authored Run, not a synthetic Pi/Codex turn: the GUI always submits `continuation=None`, never accepts session/branch identity, and therefore cannot accidentally manufacture an agent continuation authority it does not possess.
+
+Implemented:
+
+- [x] Added `New Run` to the Runs console, capability-gated by daemon `hello.capabilities` containing `submit_run_v2`. Daemon disconnect clears the gate rather than leaving a stale writable UI.
+- [x] Added Local Process, Slurm and LSF authoring on the existing daemon submission plane. There is no GUI-owned scheduler/SSH implementation and no second database path: `ipc_client -> submit_run_v2 -> runwatchd` remains the only mutation route.
+- [x] Manual forms construct only a `SubmitRunSpec`; daemon-side validation remains canonical. Local Process is forced to Host `local` with no scheduler resources. Slurm maps the shared pool field to `partition`; LSF maps it to `queue`; positive CPU/GPU counts receive lightweight client preflight before the daemon revalidates the complete spec.
+- [x] Name is optional. An omitted name gets a short readable `command summary · runner · HH:MM` display name, while the durable Run ID is a bounded ASCII `manual-<stem>-<timestamp>-<6hex>` identity accepted by the existing submission validator.
+- [x] Submission is single-flight from the dialog. While pending, repeated Start/Back actions cannot duplicate or discard the in-flight request. A daemon rejection keeps the form open and surfaces the daemon error; success closes and clears the draft.
+- [x] Remote workspace guidance explicitly warns that scheduler Runs need a path shared between login and compute nodes. The first real acceptance intentionally demonstrated why: `/tmp` produced a succeeded Slurm Run but its node-local stdout was not visible from the login node.
+- [x] Added debug-only `new-run` fixture. The real debug GUI binary rendered it with WindUI software renderer at **1080x720**, produced a **64,423-byte** PNG, and exited 0; the temporary image was removed after validation.
+- [x] GUI unit suite is **17 passed / 0 failed** after adding four manual-submission tests covering unbound Process construction, Slurm/LSF resource mapping, preflight failures and readable bounded Run IDs.
+- [x] Isolated daemon/store real Slurm acceptance passed on `gm00` using persistent `/share/home/shark`: Run `manual-r14-slurm-20260904-163340`, JobID **31834**, command `echo R14_MANUAL_GUI_OK`, 1 CPU / 1 minute. It converged to `succeeded`, retained a durable Slurm Attempt/JobID, reported `continuation.configured=false`, and bounded stdout contained the marker. The isolated local SQLite/IPC directory and remote disposable `.runwatch` directory were both removed afterwards.
+- [x] A separate isolated Local Process acceptance launched from the WebCodex executor was refused with the existing explicit Windows `ERROR_ACCESS_DENIED` breakaway guard because the executor itself is inside a non-breakaway Job Object. This is expected fail-closed behavior already release-qualified through the resident Task Scheduler/supervisor path in R13; runwatch did not silently launch a non-durable process.
+
+Local R14a closeout is green: `cargo fmt -- --check` passed, `cargo check --all-targets` passed, and `cargo test --all-targets` passed **124 / 0 / 8 ignored**. Remaining release evidence is fresh GitHub CI after the implementation commit. A new packaged interactive desktop acceptance is not required merely to re-prove R13 tray/Service semantics, but the next release package should exercise `New Run` from the ordinary Limited desktop before tagging.
+
+### R14b — make critical GUI fixtures a real Windows CI gate — locally completed 2026-09-04
+
+R13 design already required off-screen fresh-runner coverage for dashboard/detail/offline, but review found `.github/workflows/ci.yml` never encoded that gate. R14b closes the documentation/automation gap instead of carrying another implicit manual invariant.
+
+- [x] Windows CI now builds the debug `runwatch-gui` and renders `dashboard`, `detail`, `offline` and `new-run` with WindUI's software renderer at exactly **1080x720** before packaging.
+- [x] The CI step checks process exit, screenshot existence and dimensions for every fixture; any missing/failed/mis-sized state fails the Windows job before package creation.
+- [x] Local execution of the same four-fixture loop passed: dashboard **51,325 bytes**, detail **54,991 bytes**, offline **52,337 bytes**, new-run **64,423 bytes**, all 1080x720 / exit 0. All temporary PNGs were removed.
+- [x] Fixture mode remains debug-only, preserving the R13 guarantee that production packages cannot be switched to synthetic dashboard data through `RUNWATCH_GUI_FIXTURE`.
+
+Fresh-runner GitHub proof remains pending until the implementation commit is pushed.
 
 ## Known transitional debt
 

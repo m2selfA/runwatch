@@ -8,18 +8,20 @@ pub struct GuiFixture {
     pub offline_error: Option<String>,
     pub hosts: String,
     pub service: String,
+    pub open_create_dialog: bool,
 }
 
 pub fn named(name: &str) -> Option<GuiFixture> {
     match name {
-        "dashboard" => Some(build(false, false)),
-        "detail" => Some(build(true, false)),
-        "offline" => Some(build(false, true)),
+        "dashboard" => Some(build(false, false, false)),
+        "detail" => Some(build(true, false, false)),
+        "offline" => Some(build(false, true, false)),
+        "new-run" => Some(build(false, false, true)),
         _ => None,
     }
 }
 
-fn build(with_detail: bool, offline: bool) -> GuiFixture {
+fn build(with_detail: bool, offline: bool, open_create_dialog: bool) -> GuiFixture {
     let now = Utc::now();
     let rows = vec![
         RunRow {
@@ -77,6 +79,7 @@ fn build(with_detail: bool, offline: bool) -> GuiFixture {
         daemon_capabilities: 24,
         daemon_pid: 4242,
         paused: false,
+        manual_submit_supported: true,
         active: 2,
         attention: 1,
         recent_terminal: 1,
@@ -103,5 +106,6 @@ fn build(with_detail: bool, offline: bool) -> GuiFixture {
         } else {
             "runwatchd 0.2.0-dev\nprotocol: 1 · capabilities: 24\npid: 4242\npolling: active\nresident service: enabled\nGUI autostart: enabled\npackage siblings: complete".into()
         },
+        open_create_dialog,
     }
 }

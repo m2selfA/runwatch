@@ -496,6 +496,16 @@ Screenshot fixtures are a debug/CI surface only (`debug_assertions`). Release bu
 
 Independent review additionally tightened two asynchronous/error boundaries before 0.2.0 packaging: detail requests carry a generation and the controller aborts superseded loads, so slower A/B selections or older log-tail requests cannot overwrite the current detail; and Attempt/Timeline/Continuation read/parse failures render explicit local `unavailable` states rather than masquerading as absent canonical data. Because R13 changes runtime IPC plus the shipped GUI materially, current workspace/package identity is 0.2.0 while the historical v0.1.0 tag/evidence remains untouched.
 
+### R14 manual Run submission note（2026-09-04）
+
+Once the R13 console was stable, manual Run authoring became the next safe writable surface because it can reuse an authority that already exists instead of inventing new lifecycle semantics. The desktop GUI now builds a normal `SubmitRunSpec` and calls daemon `submit_run_v2`; it never submits directly to SSH/schedulers and never writes SQLite. This path supports the daemon's existing `Process`, `Slurm` and `Lsf` runners only.
+
+A GUI-authored Run is intentionally **unbound**: `continuation=None` is unconditional. The GUI has no authoritative Pi branch or Codex thread identity, so allowing it to fill `ContinuationBinding` would recreate the exact authority confusion that the R13 Continuation tab avoids. If a human wants automatic agent continuation, the Run must still originate through that agent's integration surface.
+
+The form performs only ergonomic normalization: optional human name generation, a bounded ASCII manual Run ID, positive integer parsing for CPU/GPU counts, and Slurm `partition` versus LSF `queue` mapping. All security/execution validation remains daemon-owned, including exact OpenSSH Host resolution, remote absolute workspace rules, Local Process existing-directory checks, resource-family constraints, durable submission intent, receipt idempotency and scheduler/process launch. The New Run control is hidden behind the daemon-advertised `submit_run_v2` capability and becomes unavailable on disconnect.
+
+Remote scheduler authoring also calls out a practical filesystem invariant in the UI: the selected workspace must persist and normally be shared between the login host and compute nodes. Real R14 acceptance demonstrated the failure mode cleanly: a `/tmp` Slurm smoke reached `succeeded`, but login-side log retrieval could not see compute-node-local stdout; repeating the same smoke under `/share/home/shark` closed the full submission/terminal/log loop.
+
 ### GUI 验收基线
 
 R13 GUI 改造至少需要以下门禁：

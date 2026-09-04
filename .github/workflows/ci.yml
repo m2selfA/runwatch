@@ -48,6 +48,33 @@ jobs:
         run: cargo check --all-targets
       - name: Run tests
         run: cargo test --all-targets
+      - name: Render critical GUI fixtures
+        shell: pwsh
+        run: |
+          cargo build -p runwatch-gui
+          $fixtureDir = Join-Path $env:RUNNER_TEMP 'runwatch-gui-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+          Add-Type -AssemblyName System.Drawing
+          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run')) {
+            $env:RUNWATCH_GUI_FIXTURE = $fixture
+            $png = Join-Path $fixtureDir "$fixture.png"
+            $process = Start-Process -FilePath (Resolve-Path '.\target\debug\runwatch-gui.exe') -ArgumentList @('--screenshot', $png, '--size', '1080', '720', '--renderer', 'software') -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "GUI fixture $fixture exited $($process.ExitCode)"
+            }
+            if (-not (Test-Path -LiteralPath $png)) {
+              throw "GUI fixture $fixture did not produce a screenshot"
+            }
+            $image = [System.Drawing.Image]::FromFile($png)
+            try {
+              if ($image.Width -ne 1080 -or $image.Height -ne 720) {
+                throw "GUI fixture $fixture rendered $($image.Width)x$($image.Height), expected 1080x720"
+              }
+            } finally {
+              $image.Dispose()
+            }
+          }
+          Remove-Item Env:RUNWATCH_GUI_FIXTURE -ErrorAction SilentlyContinue
       - name: Build portable Windows package
         run: cargo run -p xtask -- package --output-dir dist/ci-windows
       - name: Verify portable Windows package

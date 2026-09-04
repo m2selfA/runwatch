@@ -2,6 +2,7 @@ use crate::controller::Command;
 use crate::model::{
     DashboardSnapshot, RunDetailView, RunFilter, RunRow, RunSort, filter_rows, sort_rows,
 };
+use crate::submission::{ManualRunDraft, ManualRunner};
 use tokio::sync::mpsc;
 use windui::prelude::*;
 
@@ -31,6 +32,21 @@ pub struct RunsViewState {
     log_wrap: Signal<bool>,
     can_cancel: Signal<bool>,
     cancel_dialog: Signal<bool>,
+    manual_submit_supported: Signal<bool>,
+    create_dialog: Signal<bool>,
+    create_runner: Signal<ManualRunner>,
+    create_pending: Signal<bool>,
+    create_message: Signal<String>,
+    create_name: Signal<String>,
+    create_host: Signal<String>,
+    create_cwd: Signal<String>,
+    create_command: Signal<String>,
+    create_time: Signal<String>,
+    create_pool: Signal<String>,
+    create_account: Signal<String>,
+    create_cpus: Signal<String>,
+    create_mem: Signal<String>,
+    create_gpus: Signal<String>,
 }
 
 impl RunsViewState {
@@ -60,10 +76,27 @@ impl RunsViewState {
             log_wrap: signal(false),
             can_cancel: signal(false),
             cancel_dialog: signal(false),
+            manual_submit_supported: signal(false),
+            create_dialog: signal(false),
+            create_runner: signal(ManualRunner::Process),
+            create_pending: signal(false),
+            create_message: signal(String::new()),
+            create_name: signal(String::new()),
+            create_host: signal(String::new()),
+            create_cwd: signal(String::new()),
+            create_command: signal(String::new()),
+            create_time: signal(String::new()),
+            create_pool: signal(String::new()),
+            create_account: signal(String::new()),
+            create_cpus: signal(String::new()),
+            create_mem: signal(String::new()),
+            create_gpus: signal(String::new()),
         }
     }
 
     pub fn apply_snapshot(&self, snapshot: DashboardSnapshot) {
+        self.manual_submit_supported
+            .set(snapshot.manual_submit_supported);
         self.active.set(snapshot.active.to_string());
         self.attention.set(snapshot.attention.to_string());
         self.recent_terminal
@@ -84,6 +117,7 @@ impl RunsViewState {
     }
 
     pub fn daemon_unavailable(&self, error: String) {
+        self.manual_submit_supported.set(false);
         self.daemon.set(format!("runwatchd unavailable · {error}"));
     }
 
@@ -100,11 +134,69 @@ impl RunsViewState {
         self.can_cancel.set(detail.can_cancel);
     }
 
+    pub fn manual_submit_succeeded(&self) {
+        self.create_pending.set(false);
+        self.create_dialog.set(false);
+        self.create_message.set(String::new());
+        self.create_name.set(String::new());
+        self.create_host.set(String::new());
+        self.create_cwd.set(String::new());
+        self.create_command.set(String::new());
+        self.create_time.set(String::new());
+        self.create_pool.set(String::new());
+        self.create_account.set(String::new());
+        self.create_cpus.set(String::new());
+        self.create_mem.set(String::new());
+        self.create_gpus.set(String::new());
+    }
+
+    pub fn manual_submit_failed(&self, error: String) {
+        self.create_pending.set(false);
+        self.create_message
+            .set(format!("Submission failed: {error}"));
+    }
+
+    fn manual_draft(&self) -> ManualRunDraft {
+        ManualRunDraft {
+            name: self.create_name.get(),
+            host_alias: self.create_host.get(),
+            cwd: self.create_cwd.get(),
+            command: self.create_command.get(),
+            time: self.create_time.get(),
+            pool: self.create_pool.get(),
+            account: self.create_account.get(),
+            cpus: self.create_cpus.get(),
+            mem: self.create_mem.get(),
+            gpus: self.create_gpus.get(),
+        }
+    }
+
     #[cfg(debug_assertions)]
     pub fn apply_fixture_detail(&self, detail: RunDetailView) {
         self.selected_id.set(detail.run_id.clone());
         let request_id = self.next_detail_request();
         self.apply_detail(request_id, detail);
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn apply_fixture_create_dialog(&self) {
+        self.create_runner.set(ManualRunner::Slurm);
+        self.create_name.set("refine-map-manual".into());
+        self.create_host.set("gm00".into());
+        self.create_cwd.set("/share/project/refine".into());
+        self.create_command
+            .set("python refine.py --input map.mrc --iterations 12".into());
+        self.create_time.set("02:00:00".into());
+        self.create_pool.set("gpu".into());
+        self.create_account.set("science".into());
+        self.create_cpus.set("8".into());
+        self.create_mem.set("32G".into());
+        self.create_gpus.set("1".into());
+        self.create_message.set(
+            "Fixture preview: this remains an unbound manual Run and will be validated by runwatchd."
+                .into(),
+        );
+        self.create_dialog.set(true);
     }
 
     fn rebuild_visible(&self) {
@@ -210,6 +302,8 @@ impl RunsViewState {
         let newest_state = self.clone();
         let name_state = self.clone();
         let host_state = self.clone();
+        let new_run_state = self.clone();
+        let manual_submit_visible = self.manual_submit_supported;
         let refresh_commands = commands.clone();
         let filters = Element::row()
             .width_match()
@@ -296,6 +390,23 @@ impl RunsViewState {
                         clear_state.query.set(String::new());
                         clear_state.rebuild_visible();
                     }),
+            )
+            .child(
+                Element::button("New Run")
+                    .outline()
+                    .small()
+                    .on_click(move |ctx| {
+                        if !new_run_state.manual_submit_supported.get() {
+                            ctx.toast("This runwatchd does not advertise submit_run_v2");
+                            return;
+                        }
+                        new_run_state.create_message.set(
+                            "Manual Runs are not bound to Pi/Codex continuation. runwatchd remains the sole submission authority."
+                                .into(),
+                        );
+                        new_run_state.create_dialog.set(true);
+                    })
+                    .visible_when(move || manual_submit_visible.get()),
             )
             .child(
                 Element::button("Refresh")
@@ -601,6 +712,173 @@ impl RunsViewState {
                 ),
         );
 
+        let runner_process_state = self.clone();
+        let runner_slurm_state = self.clone();
+        let runner_lsf_state = self.clone();
+        let remote_host_visible = self.create_runner;
+        let remote_resources_visible = self.create_runner;
+        let remote_hint_visible = self.create_runner;
+        let create_back_state = self.clone();
+        let create_submit_state = self.clone();
+        let create_commands = commands.clone();
+        let create_dialog = Element::dialog(
+            self.create_dialog,
+            Element::col()
+                .width(720)
+                .bg(Color::hex(0xFFFDF8))
+                .corner(14.0)
+                .padding(20)
+                .spacing(9)
+                .child(
+                    Element::label("Start a manual Run")
+                        .font_size(20.0)
+                        .fg(Color::hex(0x243746))
+                        .width_match(),
+                )
+                .child(
+                    Element::label(
+                        "The GUI sends one unbound submit_run_v2 request to runwatchd. No Pi/Codex session is attached, so terminal completion stays in the Human Run Console rather than resuming an agent automatically.",
+                    )
+                    .font_size(12.5)
+                    .fg(Color::hex(0x5B6B75))
+                    .width_match(),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(7)
+                        .child(Element::label("Runner").width(120))
+                        .child(Element::button("Local Process").small().on_click(move |_| {
+                            runner_process_state
+                                .create_runner
+                                .set(ManualRunner::Process);
+                        }))
+                        .child(
+                            Element::button("Slurm")
+                                .neutral()
+                                .small()
+                                .on_click(move |_| {
+                                    runner_slurm_state.create_runner.set(ManualRunner::Slurm);
+                                }),
+                        )
+                        .child(
+                            Element::button("LSF")
+                                .neutral()
+                                .small()
+                                .on_click(move |_| {
+                                    runner_lsf_state.create_runner.set(ManualRunner::Lsf);
+                                }),
+                        ),
+                )
+                .child(form_field(
+                    "Name",
+                    self.create_name,
+                    "Optional; a readable name is generated when empty",
+                ))
+                .child(
+                    form_field(
+                        "SSH Host alias",
+                        self.create_host,
+                        "Exact Host from ~/.ssh/config, e.g. gm00",
+                    )
+                    .visible_when(move || remote_host_visible.get() != ManualRunner::Process),
+                )
+                .child(form_field(
+                    "Workspace",
+                    self.create_cwd,
+                    "Existing absolute local directory, or remote POSIX path",
+                ))
+                .child(
+                    Element::label(
+                        "Remote scheduler workspaces must be persistent and shared between the login host and compute nodes; node-local /tmp is not a safe default.",
+                    )
+                    .font_size(11.5)
+                    .fg(Color::hex(0xB27A1B))
+                    .width_match()
+                    .visible_when(move || remote_hint_visible.get() != ManualRunner::Process),
+                )
+                .child(
+                    Element::col()
+                        .width_match()
+                        .spacing(4)
+                        .child(Element::label("Command").fg(Color::hex(0x5B6B75)))
+                        .child(
+                            Element::text_input(
+                                self.create_command,
+                                "PowerShell command locally; shell command under Slurm/LSF",
+                            )
+                            .multiline()
+                            .wrap(true)
+                            .width_match(),
+                        ),
+                )
+                .child(
+                    Element::col()
+                        .width_match()
+                        .spacing(6)
+                        .child(form_field("Time", self.create_time, "e.g. 02:00:00"))
+                        .child(form_field(
+                            "Partition / queue",
+                            self.create_pool,
+                            "Slurm partition or LSF queue",
+                        ))
+                        .child(form_field("Account", self.create_account, "Optional"))
+                        .child(form_field("CPUs", self.create_cpus, "Optional positive integer"))
+                        .child(form_field("Memory", self.create_mem, "e.g. 32G"))
+                        .child(form_field("GPUs", self.create_gpus, "Optional positive integer"))
+                        .visible_when(move || {
+                            remote_resources_visible.get() != ManualRunner::Process
+                        }),
+                )
+                .child(
+                    Element::label_signal(self.create_message)
+                        .font_size(12.0)
+                        .fg(Color::hex(0xB27A1B))
+                        .width_match(),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .spacing(8)
+                        .child(Element::label("").weight(1.0))
+                        .child(Element::button("Back").neutral().on_click(move |ctx| {
+                            if create_back_state.create_pending.get() {
+                                ctx.toast("Submission is in progress");
+                            } else {
+                                create_back_state.create_dialog.set(false);
+                            }
+                        }))
+                        .child(Element::button("Start Run").on_click(move |ctx| {
+                            if create_submit_state.create_pending.get() {
+                                ctx.toast("Submission is already in progress");
+                                return;
+                            }
+                            match create_submit_state
+                                .manual_draft()
+                                .build_spec(create_submit_state.create_runner.get())
+                            {
+                                Ok(spec) => {
+                                    let run_id = spec.run_id.clone();
+                                    create_submit_state.create_pending.set(true);
+                                    create_submit_state
+                                        .create_message
+                                        .set(format!("Submitting {run_id}..."));
+                                    if create_commands.send(Command::SubmitManual(spec)).is_err() {
+                                        create_submit_state.create_pending.set(false);
+                                        create_submit_state.create_message.set(
+                                            "Submission failed: GUI controller is unavailable".into(),
+                                        );
+                                    }
+                                }
+                                Err(error) => create_submit_state
+                                    .create_message
+                                    .set(format!("Check the form: {error:#}")),
+                            }
+                        })),
+                ),
+        );
+
         Element::stack()
             .fill()
             .child(
@@ -616,7 +894,17 @@ impl RunsViewState {
                     .child(detail_tabs),
             )
             .child(cancel_dialog)
+            .child(create_dialog)
     }
+}
+
+fn form_field(label: &str, value: Signal<String>, placeholder: &str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::label(label).fg(Color::hex(0x5B6B75)).width(120))
+        .child(Element::text_input(value, placeholder).weight(1.0))
 }
 
 fn summary_card(title: &str, value: Signal<String>) -> Element {

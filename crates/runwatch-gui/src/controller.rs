@@ -2,7 +2,7 @@ use crate::ipc_client;
 use crate::model::{DashboardSnapshot, RunDetailView, project_dashboard};
 use crate::notifications::{Notice, NoticeKind, TransitionTracker};
 use chrono::Utc;
-use runwatch_core::autostart;
+use runwatch_core::{SubmitRunSpec, autostart};
 use tokio::sync::mpsc;
 use windui::prelude::Sender;
 
@@ -18,6 +18,7 @@ pub enum Command {
     },
     Cancel(String),
     Probe(String),
+    SubmitManual(SubmitRunSpec),
     SetDaemonAutostart(bool),
     SetGuiAutostart(bool),
 }
@@ -34,6 +35,10 @@ pub enum UiEvent {
         detail: RunDetailView,
     },
     Hosts(Result<String, String>),
+    ManualSubmitResult {
+        run_id: String,
+        result: Result<(), String>,
+    },
     AutostartState {
         daemon_enabled: bool,
         gui_enabled: bool,
@@ -166,6 +171,20 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
                                         let _ = ui_probe.send(UiEvent::Notice(notice));
                                     });
                                 }
+                                Command::SubmitManual(spec) => {
+                                    let ui_submit = ui.clone();
+                                    tokio::spawn(async move {
+                                        let requested_run_id = spec.run_id.clone();
+                                        let result = ipc_client::submit_manual(spec)
+                                            .await
+                                            .map(|_| ())
+                                            .map_err(|error| format!("{error:#}"));
+                                        let _ = ui_submit.send(UiEvent::ManualSubmitResult {
+                                            run_id: requested_run_id,
+                                            result,
+                                        });
+                                    });
+                                }
                                 Command::SetDaemonAutostart(enabled) => {
                                     spawn_autostart_change(ui.clone(), AutostartTarget::Daemon, enabled);
                                 }
@@ -244,6 +263,7 @@ async fn refresh(ui: &Sender<UiEvent>, tracker: &mut TransitionTracker) -> bool 
                 payload.capability_count,
                 payload.pid,
                 payload.paused,
+                payload.manual_submit_supported,
                 payload.runs,
                 payload.observations,
                 payload.continuations,

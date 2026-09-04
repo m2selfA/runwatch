@@ -7,6 +7,7 @@ mod icon;
 mod ipc_client;
 mod model;
 mod notifications;
+mod submission;
 mod views;
 
 use controller::{Command, UiEvent};
@@ -72,6 +73,30 @@ fn main() {
             UiEvent::Detail { request_id, detail } => {
                 runs_state.apply_detail(request_id, detail)
             }
+            UiEvent::ManualSubmitResult { run_id, result } => match result {
+                Ok(()) => {
+                    runs_state.manual_submit_succeeded();
+                    show_notice(
+                        ctx,
+                        Notice {
+                            kind: NoticeKind::Success,
+                            title: "Run submitted".into(),
+                            body: run_id,
+                        },
+                    );
+                }
+                Err(error) => {
+                    runs_state.manual_submit_failed(error.clone());
+                    show_notice(
+                        ctx,
+                        Notice {
+                            kind: NoticeKind::Attention,
+                            title: "Run submission failed".into(),
+                            body: error,
+                        },
+                    );
+                }
+            },
             UiEvent::Hosts(result) => match result {
                 Ok(hosts) => hosts_text.set(hosts),
                 Err(error) => hosts_text.set(format!(
@@ -94,7 +119,7 @@ fn main() {
     #[cfg(debug_assertions)]
     let commands = if let Ok(name) = std::env::var("RUNWATCH_GUI_FIXTURE") {
         let fixture = fixtures::named(&name).unwrap_or_else(|| {
-            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, or offline")
+            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, or new-run")
         });
         pause_ui.set(fixture.snapshot.paused);
         hosts_text.set(fixture.hosts);
@@ -103,6 +128,9 @@ fn main() {
         runs_state.apply_snapshot(fixture.snapshot);
         if let Some(detail) = fixture.detail {
             runs_state.apply_fixture_detail(detail);
+        }
+        if fixture.open_create_dialog {
+            runs_state.apply_fixture_create_dialog();
         }
         if let Some(error) = fixture.offline_error {
             runs_state.daemon_unavailable(error);
