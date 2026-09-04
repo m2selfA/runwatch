@@ -26,10 +26,10 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Invoke-Git([string[]]$Args) {
-    $output = & git.exe -C $RepoRoot @Args 2>&1
+function Invoke-Git([string[]]$GitArgs) {
+    $output = & git.exe -C $RepoRoot @GitArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Args -join ' ') failed: $($output -join [Environment]::NewLine)"
+        throw "git $($GitArgs -join ' ') failed: $($output -join [Environment]::NewLine)"
     }
     return ($output -join "`n").Trim()
 }
