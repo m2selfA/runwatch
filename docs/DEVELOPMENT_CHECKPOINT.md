@@ -55,7 +55,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R13 | Human Run Console GUI redesign | **completed 2026-09-04 — packaged Limited-user desktop acceptance closed for dashboard/detail/logs/probe/cancel/Service/hide; R13d dynamic tray tooltip/native background notification remains explicitly deferred behind WindUI 0.14 public API** |
 | R14 | Manual Human Run submission + GUI CI gate | **completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; fresh GitHub CI #33854434483 passed Windows four-fixture rendering/package and Linux glibc 2.17 gates** |
 | R15 | GUI layout polish: single-line Run headers + responsive Host cards | **completed 2026-09-04 — 1080×720 Continuation header is single-line; Hosts use equal-size longest-content cards and responsive columns; fresh GitHub CI #33857831526 passed 127 tests, seven viewport fixture cases, Windows package and Linux glibc 2.17 gates** |
-| R16 | v0.2.0 release closure | **in progress 2026-09-04 — freeze R15 runtime; packaged ordinary-desktop New Run acceptance, v0.1.0→v0.2.0 upgrade preservation, release docs/fresh CI/tag/GitHub Release** |
+| R16 | v0.2.0 release closure | **completed 2026-09-04 — packaged Limited-desktop Process/Slurm/LSF acceptance, v0.1.0→v0.2.0 active-Run upgrade preservation, fresh CI, annotated `v0.2.0` tag and GitHub Release all closed** |
 
 ## R0 completion record
 
@@ -842,7 +842,7 @@ Fresh-runner proof is closed for implementation commit `e66286b2b36c26ca64245620
 
 ## R16 current work
 
-### R16 — v0.2.0 release closure — started 2026-09-04
+### R16 — v0.2.0 release closure — completed 2026-09-04
 
 R16 is a release-only closure block. The R15 runtime is frozen unless acceptance exposes a concrete release blocker; do not begin retry/resubmit/Attempt UI, tray-notification framework work, or new Agent Integration productization inside this phase.
 
@@ -856,7 +856,7 @@ Release gates and evidence:
 - [x] Reconciled two stale historical unchecked boxes: MCP modernization was completed in R8b, and the multi-hour daemon/HPC soak was completed by R11 authority #11. Neither is a current blocker.
 - [x] Added `docs/RELEASE_NOTES_v0.2.0.md` and `docs/V0.2_RELEASE_CANDIDATE.md`. Final local workspace closeout is green: `cargo fmt --all -- --check` pass; `cargo check --all-targets` pass; `cargo test --all-targets` remains **127 passed / 0 failed / 8 ignored**; `git diff --check` pass. The CI-equivalent software-render matrix also passed: dashboard **51,175 B**, detail **54,842 B**, offline **51,982 B**, new-run **65,164 B**, hosts **47,744 B** at 1080×720; Hosts **44,828 B** at 760×720 and **51,302 B** at 1440×900; the new lower-right footer probe counted **3,016** primary-action accent pixels (required >=100). Temporary fixture PNGs were removed.
 - [x] Final implementation/release-document commit `d070eba2389e79ffcce4e57b2ffbfc7f03e9dec5` closed green in fresh GitHub Actions **#33863768677**. Linux `manylinux2014_x86_64` completed in **3m29s**, confirmed build-container `glibc 2.17`, and the shipped `runwatch` + `runwatch-mcp` ELFs each require at most **GLIBC_2.16 <= GLIBC_2.17**. Windows `windows-2022` completed in **12m33s** and passed formatting, workspace check, the full **127 passed / 0 failed / 8 ignored** test matrix, the strengthened seven-case GUI software-render gate including pinned `New Run` footer visibility, optimized package build, `xtask verify` and upload. Windows artifact ID **9933490617** is **10,292,303 bytes**, digest `sha256:b2782e2753816fdcde93ede2be8d0aa18926d68a89bef3942267ac119c6e30f0`; its verified inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,303,408 bytes**, SHA-256 `e662cf8c5793aa562ab3a55cd8ca0a73241482ea6b85dda2339aedb0d3364eb1`, `ok=true`, files=5. Linux artifact ID **9933223985** is **6,129,423 bytes**, digest `sha256:4efce7a9e14280d1583cc18183aa52ca2fa7c87ee22396de78efbabcd4675714`. The only workflow annotation is GitHub's platform notice that Node-20 `checkout@v4` / `upload-artifact@v4` actions are forced to Node 24; it is not a project failure.
-- [ ] Fresh CI is now release-qualified. Next and only remaining R16 operations are a docs-only evidence closeout, annotated `v0.2.0` tag, and GitHub Release publication using the exact verified fresh-runner Windows inner ZIP. Preserve historical `v0.1.0` tag/package/endurance evidence unchanged.
+- [x] Release publication is closed. Docs-only evidence commit `5c9075619872405086cdf1c83c2eff78cb4efa20` contains no runtime drift above CI-qualified `d070eba`; annotated tag `v0.2.0` peels exactly to that docs closeout. GitHub Release ID **382653597** is published (not draft/prerelease) at `https://github.com/m2selfA/runwatch/releases/tag/v0.2.0`; release asset ID **544193639** is the exact **10,303,408-byte** fresh-runner `runwatch-v0.2.0-windows-x86_64.zip`, and GitHub independently reports digest `sha256:e662cf8c5793aa562ab3a55cd8ca0a73241482ea6b85dda2339aedb0d3364eb1`. The remote ref is an annotated tag object whose target commit is `5c9075619872405086cdf1c83c2eff78cb4efa20`. Historical `v0.1.0` tag/package/endurance evidence remains unchanged.
 
 ## Known transitional debt
 

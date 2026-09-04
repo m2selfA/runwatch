@@ -2,6 +2,8 @@
 
 Release date: 2026-09-04
 
+Published GitHub Release: `https://github.com/m2selfA/runwatch/releases/tag/v0.2.0`. The annotated `v0.2.0` tag peels to release-evidence commit `5c9075619872405086cdf1c83c2eff78cb4efa20`; runtime/package implementation remains the fresh-CI-qualified `d070eba2389e79ffcce4e57b2ffbfc7f03e9dec5` below it.
+
 ## Overview
 
 `runwatch` v0.2.0 keeps the v0.1.0 durable-authority architecture and turns the Windows GUI from a validation shell into a practical **Human Run Console**. `runwatchd` remains the only owner of canonical Run/Attempt/Observation/Delivery state, scheduler lifecycle, SSH observation and agent continuation. The GUI talks to it through local IPC; it does not open SQLite directly, create its own scheduler/SSH authority or synthesize Pi/Codex continuation identity.
@@ -83,6 +85,7 @@ Fresh-runner release identity from implementation commit `d070eba2389e79ffcce4e5
 
 - Windows GitHub artifact ID **9933490617**, **10,292,303 bytes**, digest `sha256:b2782e2753816fdcde93ede2be8d0aa18926d68a89bef3942267ac119c6e30f0`.
 - Authoritative public inner ZIP: `runwatch-v0.2.0-windows-x86_64.zip`, **10,303,408 bytes**, SHA-256 `e662cf8c5793aa562ab3a55cd8ca0a73241482ea6b85dda2339aedb0d3364eb1`; downloaded copy independently passes `xtask verify` (`ok=true`, files=5, version=0.2.0, platform=windows-x86_64).
+- Published GitHub Release asset ID **544193639** reports the same size and digest; GitHub Release ID is **382653597**, non-draft and non-prerelease.
 - Linux artifact ID **9933223985**, **6,129,423 bytes**, digest `sha256:4efce7a9e14280d1583cc18183aa52ca2fa7c87ee22396de78efbabcd4675714`; both shipped ELFs require at most `GLIBC_2.16 <= GLIBC_2.17`.
 
 Fresh Windows CI also passed **127 tests / 0 failed / 8 ignored**, the strengthened seven-case GUI fixture matrix (including the pinned Start Run footer gate), optimized package build and package verification. The only workflow annotation is GitHub's Node-20-to-Node-24 action-runtime platform notice.
