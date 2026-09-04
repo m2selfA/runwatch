@@ -53,7 +53,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
 | R12 | Post-v0.1 portability CI + GUI polish | **completed 2026-09-04 — Windows package CI + Linux glibc 2.17 artifact gate green; GUI `ssh -G` console flashing fixed** |
 | R13 | Human Run Console GUI redesign | **completed 2026-09-04 — packaged Limited-user desktop acceptance closed for dashboard/detail/logs/probe/cancel/Service/hide; R13d dynamic tray tooltip/native background notification remains explicitly deferred behind WindUI 0.14 public API** |
-| R14 | Manual Human Run submission + GUI CI gate | **R14a/R14b locally completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; Windows CI now renders four critical GUI fixtures; fresh GitHub run pending implementation commit** |
+| R14 | Manual Human Run submission + GUI CI gate | **completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; fresh GitHub CI #33854434483 passed Windows four-fixture rendering/package and Linux glibc 2.17 gates** |
 
 ## R0 completion record
 
@@ -808,7 +808,7 @@ Implemented:
 - [x] Isolated daemon/store real Slurm acceptance passed on `gm00` using persistent `/share/home/shark`: Run `manual-r14-slurm-20260904-163340`, JobID **31834**, command `echo R14_MANUAL_GUI_OK`, 1 CPU / 1 minute. It converged to `succeeded`, retained a durable Slurm Attempt/JobID, reported `continuation.configured=false`, and bounded stdout contained the marker. The isolated local SQLite/IPC directory and remote disposable `.runwatch` directory were both removed afterwards.
 - [x] A separate isolated Local Process acceptance launched from the WebCodex executor was refused with the existing explicit Windows `ERROR_ACCESS_DENIED` breakaway guard because the executor itself is inside a non-breakaway Job Object. This is expected fail-closed behavior already release-qualified through the resident Task Scheduler/supervisor path in R13; runwatch did not silently launch a non-durable process.
 
-Local R14a closeout is green: `cargo fmt -- --check` passed, `cargo check --all-targets` passed, and `cargo test --all-targets` passed **124 / 0 / 8 ignored**. Remaining release evidence is fresh GitHub CI after the implementation commit. A new packaged interactive desktop acceptance is not required merely to re-prove R13 tray/Service semantics, but the next release package should exercise `New Run` from the ordinary Limited desktop before tagging.
+Local R14a closeout is green: `cargo fmt -- --check` passed, `cargo check --all-targets` passed, and `cargo test --all-targets` passed **124 / 0 / 8 ignored**. Fresh GitHub CI is also green as recorded below. A new packaged interactive desktop acceptance is not required merely to re-prove R13 tray/Service semantics, but the next release package should exercise `New Run` from the ordinary Limited desktop before tagging.
 
 ### R14b — make critical GUI fixtures a real Windows CI gate — locally completed 2026-09-04
 
@@ -819,7 +819,7 @@ R13 design already required off-screen fresh-runner coverage for dashboard/detai
 - [x] Local execution of the same four-fixture loop passed: dashboard **51,325 bytes**, detail **54,991 bytes**, offline **52,337 bytes**, new-run **64,423 bytes**, all 1080x720 / exit 0. All temporary PNGs were removed.
 - [x] Fixture mode remains debug-only, preserving the R13 guarantee that production packages cannot be switched to synthetic dashboard data through `RUNWATCH_GUI_FIXTURE`.
 
-Fresh-runner GitHub proof remains pending until the implementation commit is pushed.
+Fresh-runner proof is closed for implementation commit `7b5390f889d9b773018a190e20eb4e073d772d1e` in GitHub Actions **#33854434483**. Linux `glibc 2.17` completed successfully including binary upload. Windows `windows-2022` passed formatting, workspace check, **124 tests / 0 failed / 8 ignored**, the new four-fixture `dashboard/detail/offline/new-run` 1080x720 software-render step, optimized package, package verification and artifact upload. The Windows artifact is ID **9929948488**, **10,281,409 bytes**, digest `sha256:1290e8e4ef947dfe490371feb1fc54a184536c02f4afc393efe8c32ffe6a637d`; its inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,291,912 bytes**, SHA-256 `83fe2e5610c757ef3c92fa2ea82ea627b9c813f06e5c2c27df9a149c92965ce8`. The Linux artifact is ID **9929722892**, **6,127,187 bytes**, digest `sha256:2a8822f50c00cece81979b87ad71ca6809b2179f804f7a75ce5b3100da04eb0b`. The only workflow annotations are GitHub platform notices that Node 20-based `actions/checkout@v4` / `actions/upload-artifact@v4` are being forced onto Node 24; they are not project failures.
 
 ## Known transitional debt
 
