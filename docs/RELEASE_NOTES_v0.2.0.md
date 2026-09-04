@@ -79,7 +79,13 @@ Pre-CI post-fix local candidate:
 - SHA-256: `0e0d52d01c4a000aa3918a7231c205f11f8c90de1fb24397745abb3ef428f9bd`
 - `cargo run -p xtask -- verify ...`: `ok=true`, platform `windows-x86_64`, version `0.2.0`, files=5.
 
-The GitHub Release asset identity will be the fresh-runner Windows inner ZIP from the final release implementation commit and is recorded in `docs/V0.2_RELEASE_CANDIDATE.md` / `docs/DEVELOPMENT_CHECKPOINT.md` after CI closure.
+Fresh-runner release identity from implementation commit `d070eba2389e79ffcce4e57b2ffbfc7f03e9dec5` / GitHub Actions **#33863768677**:
+
+- Windows GitHub artifact ID **9933490617**, **10,292,303 bytes**, digest `sha256:b2782e2753816fdcde93ede2be8d0aa18926d68a89bef3942267ac119c6e30f0`.
+- Authoritative public inner ZIP: `runwatch-v0.2.0-windows-x86_64.zip`, **10,303,408 bytes**, SHA-256 `e662cf8c5793aa562ab3a55cd8ca0a73241482ea6b85dda2339aedb0d3364eb1`; downloaded copy independently passes `xtask verify` (`ok=true`, files=5, version=0.2.0, platform=windows-x86_64).
+- Linux artifact ID **9933223985**, **6,129,423 bytes**, digest `sha256:4efce7a9e14280d1583cc18183aa52ca2fa7c87ee22396de78efbabcd4675714`; both shipped ELFs require at most `GLIBC_2.16 <= GLIBC_2.17`.
+
+Fresh Windows CI also passed **127 tests / 0 failed / 8 ignored**, the strengthened seven-case GUI fixture matrix (including the pinned Start Run footer gate), optimized package build and package verification. The only workflow annotation is GitHub's Node-20-to-Node-24 action-runtime platform notice.
 
 ## Compatibility and installation
 
