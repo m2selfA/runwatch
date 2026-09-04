@@ -306,7 +306,194 @@ Windows resident runtime 使用当前用户的 Task Scheduler，但 Task Schedul
 
 GUI 是纯 daemon 客户端：不打开 `RunStore`、不持有 SSH pool、不调用 `serve_loop`。daemon 离线时只显示离线，不接管 scheduler ownership；Pause 通过 IPC 控制 daemon。
 
-GUI 登录自启动与 daemon resident service 是两个独立设置：`Start GUI with Windows` 仅控制 UI，`Keep runwatchd running` 才控制 Task Scheduler/supervisor service。Task Scheduler XML 在已验证的 Windows 环境中必须写成 UTF-16LE + BOM；canonicalized Win32 verbatim paths 还必须在进入 scheduler/cmd 前规范化成普通 DOS/UNC 路径。发布门禁不仅做 create/query-XML/delete，还必须真实启动 supervisor、强杀 child 验证秒级恢复、强杀 supervisor 验证下一次 reconcile 恢复，并确认 Job Object 没有留下孤儿 child。
+### Human Run Console：GUI 的产品定位
+
+v0.1 的 GUI 只证明了 tray、daemon observer、Pause 和本机通知链路，不能继续按“把 `list_runs` 拼成几行文本”的方向扩张。后续 GUI 的目标是 **Human Run Console**：让人类用户快速回答四个问题：
+
+1. 现在有哪些 Run 在运行、排队或需要我注意？
+2. 某个 Run 当前到底是什么状态，最近一次 observation 是否可信？
+3. 如果出错，我能否立即看到日志、生命周期产物、attempt/continuation 线索？
+4. 哪些动作是安全的人类控制动作，哪些必须回到 Pi/agent 才能做？
+
+GUI 仍不变成第二套 scheduler、SSH IDE 或 agent runtime。它展示和控制 canonical runwatch 状态，但不拥有生命周期真相。
+
+### GUI 信息架构
+
+主窗口从单页状态小窗升级为 4 个一级页面，默认打开 `Runs`：
+
+```text
+Runs       默认工作台：Run 列表、搜索/过滤、attention、选中 Run 的详情
+Hosts      ~/.ssh/config 的只读有效 Host 视图 + 显式诊断入口
+Service    runwatchd/supervisor/Task Scheduler/版本/暂停状态
+Settings   GUI 自启动、通知、显示偏好等纯 UX 设置
+```
+
+窗口默认尺寸提高到适合数据工作台的约 `1080×720`，保持可缩放/可调整大小、关闭隐藏到 tray。窄窗可以降级为列表 + drill-in，而不是强行把所有列压成不可读文本。
+
+### Runs dashboard
+
+顶部保持一眼可见的总体状态，但不再只显示一个字符串：
+
+- `Active`：Submitting + Queued + Running；
+- `Attention`：Failed、长期 stale/unreachable、probe error、continuation retry/needs_rebind、daemon/service 异常；
+- `Recent terminal`：最近完成/失败数量；
+- `Daemon`：connected / paused / unavailable。
+
+主列表采用可搜索、可排序的数据表/动态列表。默认列：
+
+```text
+State | Name | Runner | Host | Handle | Observation | Updated/Elapsed | Continuation
+```
+
+显示规则：
+
+- `name` 优先于 opaque `run_id`；缺名时使用稳定简短 fallback，完整 Run ID 在详情中保留；
+- **Execution state 与 Observation health 必须分开显示**。例如 `Running + unreachable` 不能渲染成 Unknown，更不能把 SSH 断线误导成科研任务失败；
+- 当前 Attempt 的 scheduler JobID / local handle 是次级句柄，不取代 Run identity；
+- 默认排序优先 `attention -> active -> recent terminal`，而不是单纯数据库插入顺序；
+- 快速过滤至少有 `Active / Attention / All`，搜索覆盖 name、run_id、job handle、host 和 workspace。
+
+### Run detail
+
+选中 Run 后进入 master-detail 或 drill-in 详情。详情顶部固定状态、Run 名称、host/runner/handle 和安全动作；正文拆成 5 个 tab：
+
+1. **Overview**
+   - Run ID / name / status / current Attempt；
+   - runner、host、workspace、job handle；
+   - command（默认折叠，避免长命令淹没页面）；
+   - resources；
+   - created/updated/terminal 时间；
+   - Observation source/health/observed_at/raw_state/reason/exit code；
+   - stale 由客户端按 observed_at 推导，并明确标为 observation age。
+2. **Logs**
+   - stdout / stderr 分页或分段；
+   - 默认沿用 daemon 的 bounded tail，不偷偷下载完整远端日志；
+   - 80/200/500 行档位、Refresh、Copy、Wrap；
+   - 日志读取失败只影响 Logs tab，不把 Run 状态改坏。
+3. **Artifacts**
+   - 展示 runwatch 生命周期 inventory：script/stdout/stderr/terminal/receipt；
+   - 支持复制路径；Local Process 可在以后增加“Open containing folder”；
+   - Remote artifact 内容浏览/编辑仍属于 `pi-ssh-tools`，GUI 不加入通用远端文件管理器。
+4. **Timeline**
+   - 按时间展示 submitted/running/observation_changed/cancel_requested/terminal/continuation_* 等不可变 Event；
+   - 默认只取最近有限条，允许继续加载，不能一次把整个历史拖进 UI。
+5. **Continuation**
+   - 显示 agent kind、session 的脱敏/缩略 identity、Delivery 状态、retry/needs_rebind 原因；
+   - `needs_rebind` 明确提示“回到对应 agent/Pi session 执行 rebind”；
+   - GUI **不提供 runs_rebind 按钮**，因为 GUI 没有当前 Pi branch 的权威 identity，不能伪造安全 rebind。
+
+### GUI 允许的人类动作
+
+第一阶段控制面只开放能清楚解释且有 daemon authority 的动作：
+
+- `Refresh`：刷新 dashboard 本地快照；
+- `Probe now`：后续增加 daemon-owned 的单 Run 强制 observation refresh，不能让 GUI 自己 SSH；
+- `Copy Run ID / Job ID / Workspace`；
+- `Cancel Run`：仅非 terminal Run 可用，必须二次确认，并说明这是 cancel request，最终 Cancelled 仍由 observation 收敛；
+- `Pause / Resume polling`：属于 daemon 全局控制，若存在 live Runs 必须显示明显影响说明；
+- resident runtime / GUI autostart 的 enable/disable 继续放在 Service/Settings，不与单 Run 动作混在一起。
+
+暂不加入：GUI retry/resubmit、任意 SSH shell、远端文件编辑、scheduler admin、agent branch rebind、Delivery 强制 ack。它们要么需要新的 product semantics，要么属于其它 authority plane。
+
+### Attention 与通知
+
+GUI 不再把“失败数”当唯一异常信号。`RunAttention` 是一个 **可丢弃的 UI projection**，由 canonical Run + Observation + Delivery/Continuation 状态推导，至少覆盖：
+
+- execution failed；
+- observation `probe_error` / `unreachable` / stale；
+- cancel requested 但尚未收敛；
+- continuation retrying / needs_rebind；
+- daemon unavailable / polling paused；
+- resident service 配置与实际 daemon health 不一致。
+
+通知遵循“状态转移触发、当前 dashboard 为真相源”的原则：
+
+- 成功 completion：普通通知；
+- failure、needs_rebind、持续 observation loss：attention 通知；
+- 同一次 poll 多个 Run 终态要合并/逐项记账，不能像 v0.1 `find_map()` 那样只通知第一个；
+- heartbeat/每次 refresh 不发通知；
+- GUI 重启后从 daemon 重建当前 dashboard，不把本地 notification cursor 当 lifecycle authority；
+- 可保存一个纯 UX `last_seen_event`/notification preference，用于避免重复 toast，这些数据丢失也不能影响 Run/Delivery。
+
+Tray tooltip/menu 也应反映当前状态，例如 `runwatch · 3 active · 1 attention`；只有真正 idle 时才保持简洁。Tray 是“回来时快速意识到还有任务”的入口，而不是完整控制面。
+
+### Hosts page
+
+Host 仍只来自 `~/.ssh/config`，不建立第二通讯录。页面展示：alias、effective destination、user/port、ProxyJump 摘要、是否被当前 live Run 使用。Host 配置读取错误必须显式显示，不能像 v0.1 `unwrap_or_default()` 那样退化成“似乎没有 Host”。
+
+后续可增加显式 `Test connection` / trust diagnostics，但它必须通过 daemon/runwatch-ssh 的同一 fail-closed trust policy，并且只能由用户主动触发，不能因为打开 Hosts 页面就并发登录所有机器。
+
+### Service page
+
+Service 页面把当前散落在 tray menu 的运行维护信息集中起来：
+
+- daemon connected / pid / version / protocol / capabilities；
+- daemon paused；
+- resident supervisor/Task Scheduler enabled；
+- GUI logon autostart enabled；
+- package sibling/version 健康；
+- 最近 daemon 连接错误。
+
+关闭 resident runtime 不等于取消科研 Run，但会停止本机 observation/continuation，若存在 live Runs 必须在确认框中明确说明这一影响。
+
+GUI 登录自启动与 daemon resident service 继续保持两个独立设置：`Start GUI with Windows` 仅控制 UI，`Keep runwatchd running` 才控制 Task Scheduler/supervisor service。Task Scheduler XML 在已验证的 Windows 环境中必须写成 UTF-16LE + BOM；canonicalized Win32 verbatim paths还必须在进入 scheduler/cmd 前规范化成普通 DOS/UNC 路径。发布门禁不仅做 create/query-XML/delete，还必须真实启动 supervisor、强杀 child 验证秒级恢复、强杀 supervisor 验证下一次 reconcile 恢复，并确认 Job Object 没有留下孤儿 child。
+
+### GUI 数据与 IPC 设计
+
+不要让 UI 为了做详情页重新打开 SQLite。扩展 daemon 的 **只读 IPC projection**，优先形成通用而非 GUI 专属的读模型：
+
+```text
+list_runs                 继续保留兼容
+get_run                   继续保留兼容
+list_run_events           新增：bounded recent Event timeline
+get_continuation_status   新增：Run-scoped binding/Delivery attention projection
+get_attempt               新增：当前/指定 Attempt metadata
+probe_run                 新增：daemon-owned explicit refresh（后续）
+```
+
+Dashboard 可以继续一次获取 `runs + observations`，但 GUI view-model 必须把 Run/Observation 关联起来；详情信息按选中 Run 懒加载，Logs/Artifacts 单独按需读取，避免每 2 秒把所有日志/事件一起拉回来。
+
+Delivery/Continuation projection 只暴露 GUI 需要的状态和可操作错误，不应把 session 文件内容、credential 或内部 lease token 暴露给桌面 UI。
+
+### GUI 应用层结构
+
+当前 `main.rs` 同时承担 tray、IPC、轮询、projection、notification 和渲染，后续必须先拆层再加功能：
+
+```text
+runwatch-gui/
+  app.rs / controller.rs        UI 生命周期与 action dispatch
+  ipc_client.rs                 bounded daemon IPC
+  model.rs                      GuiSnapshot / RunRow / RunDetail / Attention
+  projection.rs                 canonical data -> pure view-model
+  notifications.rs              transition/dedupe/coalesce
+  settings.rs                   仅 GUI UX 设置
+  views/
+    runs.rs
+    run_detail.rs
+    hosts.rs
+    service.rs
+    settings.rs
+```
+
+只保留一个长期 background controller/runtime；UI action 通过 command channel 发送，不再像当前 Pause toggle 那样每次点击临时创建线程 + Tokio runtime。轮询产生 immutable-ish snapshot，再由 WindUI signals 更新动态列表/详情。
+
+WindUI 0.14 已具备 dynamic list、sortable table、tabs、dialog、segmented/nav、progress、clipboard 和 off-screen screenshot，先用现有框架完成上述 console；只有在真实实现中证明大数据表、动态 master-detail 或 accessibility 被框架卡住，才评估迁移，而不是因为 v0.1 UI 简陋就先换框架。
+
+### GUI 验收基线
+
+R13 GUI 改造至少需要以下门禁：
+
+- 0 / 1 / 50 / 500 Runs 的 projection 与列表排序/filter/search 测试；
+- Running + unreachable 必须显示“仍 Running，但 observation unhealthy”，不能降成 Unknown；
+- 同时多个 terminal transition 不丢通知；
+- daemon offline / reconnect / paused 的 dashboard 与 tray 状态一致；
+- Run detail 在 logs/artifacts/event IPC 失败时局部降级，主列表仍可用；
+- Cancel 必须 confirmation + terminal disabled + daemon-side cancel semantics；
+- needs_rebind 只显示 attention/instruction，GUI 无法直接伪造 rebind；
+- Hosts parse 失败显式可见，不静默变空；
+- Window hide/show、tray、GUI/service autostart 仍保持现有语义；
+- 所有 GUI 启动/操作路径继续保证 Windows 无 console flash；
+- Windows CI 除 Rust test/package 外增加关键 GUI fixture 的 off-screen screenshot smoke，至少覆盖 Runs dashboard、Run detail、daemon offline 三种状态。
 
 ## MCP
 
