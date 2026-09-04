@@ -166,12 +166,39 @@ function Invoke-SchtasksBestEffort([string[]]$TaskArgs) {
     }
 }
 
+function Get-ScheduledTaskState([string]$TaskName) {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & schtasks.exe /Query /TN $TaskName /FO CSV /NH 2>$null
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($code -ne 0) { return "missing" }
+    $line = @($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    if ($line.Count -eq 0) { return "unknown" }
+    $row = $line[0] | ConvertFrom-Csv -Header TaskName, NextRunTime, Status
+    return [string]$row.Status
+}
+
+function Wait-ScheduledTaskQuiescent([string]$TaskName, [int]$Seconds = 15) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $state = Get-ScheduledTaskState $TaskName
+        if ($state -ne "Running") { return $state }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    throw "Task Scheduler task $TaskName remained Running for ${Seconds}s after stop"
+}
+
 function Stop-Resident($Context) {
     $supervisorPid = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
     if ($supervisorPid) {
         Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue
     }
     [void](Invoke-SchtasksBestEffort @("/End", "/TN", $Context.task_name))
+    $processesStopped = $false
     for ($i = 0; $i -lt 100; $i++) {
         $servePid = Get-PidFromHeartbeat $Context.data_dir "serve.pid"
         $superPid = Get-PidFromHeartbeat $Context.data_dir "supervise.pid"
@@ -181,10 +208,14 @@ function Stop-Resident($Context) {
                 $alive = $true
             }
         }
-        if (-not $alive) { return }
+        if (-not $alive) {
+            $processesStopped = $true
+            break
+        }
         Start-Sleep -Milliseconds 100
     }
-    throw "resident processes did not stop within 10 seconds"
+    if (-not $processesStopped) { throw "resident processes did not stop within 10 seconds" }
+    [void](Wait-ScheduledTaskQuiescent $Context.task_name 15)
 }
 
 function Write-ResidentTask($Context) {
@@ -223,6 +254,7 @@ cd /d "$($Context.runtime_dir)"
 }
 
 function Start-Resident($Context) {
+    [void](Wait-ScheduledTaskQuiescent $Context.task_name 15)
     & schtasks.exe /Run /TN $Context.task_name | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "failed to start Task Scheduler task $($Context.task_name)" }
     [void](Wait-Hello $Context.endpoint 40)
