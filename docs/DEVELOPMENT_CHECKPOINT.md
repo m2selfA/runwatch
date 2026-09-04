@@ -695,6 +695,7 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 - [ ] cap00 does not expose Docker in this development runner, so the actual `manylinux2014_x86_64` build/ELF compatibility gate is intentionally not claimed as a local pass. The pushed GitHub-hosted Linux job is the first authoritative execution of that container path.
 - [x] First pushed CI run `33830650469` was parsed and scheduled correctly. Its Windows job reached `cargo check` and exposed a fresh-runner prerequisite that cap00 already had installed: `aws-lc-sys 0.44.0` requires NASM for the normal x86_64 Windows build and GitHub `windows-2022` did not provide `nasm.exe` on PATH. The job failed closed before tests/package rather than silently changing crypto build features.
 - [x] CI now installs and verifies NASM explicitly with Chocolatey before the Rust build. We intentionally did not set `AWS_LC_SYS_NO_ASM=1`; GitHub now exercises the same default-feature build shape as the formal Windows package.
+- [x] Second pushed CI run `33830869221` proved Chocolatey installed NASM 3.2.0 successfully but also exposed a same-step environment detail: installers update the persistent PATH, not the already-running PowerShell process. The workflow now verifies the package's canonical `$env:ProgramFiles\NASM\nasm.exe`, appends that directory to `GITHUB_PATH` for later steps, prepends it to the current process PATH, and invokes the exact executable before Cargo. This keeps the prerequisite explicit instead of depending on `refreshenv` shell magic.
 
 
 ## Known transitional debt

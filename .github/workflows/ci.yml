@@ -34,7 +34,14 @@ jobs:
         shell: pwsh
         run: |
           choco install nasm --no-progress -y
-          nasm -v
+          $nasmDir = Join-Path $env:ProgramFiles 'NASM'
+          $nasmExe = Join-Path $nasmDir 'nasm.exe'
+          if (-not (Test-Path -LiteralPath $nasmExe)) {
+            throw "Chocolatey reported a successful NASM install, but $nasmExe was not found"
+          }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$nasmDir;$env:PATH"
+          & $nasmExe -v
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check workspace
