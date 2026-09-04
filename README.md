@@ -1,6 +1,11 @@
 # runwatch
 
+[![CI](https://github.com/m2selfA/runwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/m2selfA/runwatch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Windows-first **Durable Run Lifecycle Authority** for long scientific computation. `runwatchd` owns canonical Run/Attempt/Observation/Delivery state, remote scheduler lifecycle and durable continuation while the initiating coding agent may be gone.
+
+The v0.1.0 release is Pi-first: `runwatch` is the durable authority, `pi-runs` is the Pi integration plane, and `pi-ssh-tools` is the online remote workspace plane. See [installation](docs/INSTALL.md) and the [v1 release contract](docs/V1_RELEASE_CANDIDATE.md) before deploying it.
 
 - 痛点：[docs/pain-points.md](docs/pain-points.md)
 - 设计：[docs/design.md](docs/design.md)
@@ -73,4 +78,25 @@ python scripts/acceptance/codex_real_provider.py \
   --workdir /absolute/remote/workdir
 ```
 
-The harness fixes the remote workload to a two-second acceptance command, stores runwatch state behind a nonce-isolated SQLite/IPC endpoint, and injects the temporary MCP server only through process-local Codex `-c` overrides. It does **not** modify the permanent Codex MCP registration or `config.toml`. Success requires both canonical SQLite evidence (`Run`, `Delivery`, `AgentInvocation`) and exact-thread rollout evidence (one deterministic continuation marker with matching `task_complete`); process exit alone never counts as continuation success.
+## Development
+
+The repository is Rust-first. Run the local validation matrix before opening a change:
+
+```text
+cargo fmt --all -- --check
+cargo check --all-targets
+cargo test --all-targets
+```
+
+Build and verify the portable Windows package with the Rust-native release tool:
+
+```text
+cargo run -p xtask -- package
+cargo run -p xtask -- verify dist/runwatch-v<version>-<platform>.zip
+```
+
+See [docs/INSTALL.md](docs/INSTALL.md) for the supported sibling-binary installation layout and [AGENTS.md](AGENTS.md) for project boundaries.
+
+## License
+
+runwatch is released under the [MIT License](LICENSE).

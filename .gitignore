@@ -14,3 +14,7 @@
 __pycache__/
 *.pyc
 
+# Local Python packaging/smoke prototypes; formal release tooling is Rust-native.
+scripts/release/
+scripts/acceptance/package_codex_smoke.py
+
