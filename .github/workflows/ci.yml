@@ -30,6 +30,11 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+      - name: Install Windows native build prerequisites
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          nasm -v
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check workspace

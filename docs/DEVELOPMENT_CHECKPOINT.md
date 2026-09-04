@@ -693,6 +693,8 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 - [x] A fresh local Windows release package built from the R12 worktree and verified successfully with Rust `xtask`: `runwatch-v0.1.0-windows-x86_64.zip`, **9,687,221 bytes**, SHA-256 `268f5c0aca12e4f14c0cd1058cf2f75161e000edbb2b441d2c41d2c319d10d3b`, manifest files=5, `ok=true`.
 - [x] The GLIBC gate script is syntax-checked locally with Bash; an initial portability issue in its `[[ =~ ]]` expression was caught before push and replaced with a `grep -E` validation that is compatible with the available Bash as well as the manylinux container.
 - [ ] cap00 does not expose Docker in this development runner, so the actual `manylinux2014_x86_64` build/ELF compatibility gate is intentionally not claimed as a local pass. The pushed GitHub-hosted Linux job is the first authoritative execution of that container path.
+- [x] First pushed CI run `33830650469` was parsed and scheduled correctly. Its Windows job reached `cargo check` and exposed a fresh-runner prerequisite that cap00 already had installed: `aws-lc-sys 0.44.0` requires NASM for the normal x86_64 Windows build and GitHub `windows-2022` did not provide `nasm.exe` on PATH. The job failed closed before tests/package rather than silently changing crypto build features.
+- [x] CI now installs and verifies NASM explicitly with Chocolatey before the Rust build. We intentionally did not set `AWS_LC_SYS_NO_ASM=1`; GitHub now exercises the same default-feature build shape as the formal Windows package.
 
 
 ## Known transitional debt
