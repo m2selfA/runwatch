@@ -312,18 +312,19 @@ impl RunsViewState {
         let activate_commands = commands.clone();
         let table = Element::table_virtual(
             vec![
-                ("State", 1.1),
+                ("State", 1.0),
                 ("Name", 2.0),
-                ("Runner", 0.9),
-                ("Host", 1.0),
+                ("Runner", 0.8),
+                ("Host", 0.85),
                 ("Handle", 1.0),
-                ("Observation", 1.7),
-                ("Continuation", 1.2),
-                ("Updated", 0.8),
+                ("Observation", 1.65),
+                ("Continuation", 1.05),
+                ("Updated", 1.2),
             ],
             self.table_rows,
             42,
         )
+        .cell_lines(1)
         .actions("", 0.7, move |row| {
             let state = action_state.clone();
             let commands = action_commands.clone();
@@ -335,7 +336,7 @@ impl RunsViewState {
         })
         .on_row_activate(move |_ctx, row| activate_state.load_row(row, &activate_commands))
         .width_match()
-        .height(280);
+        .weight(1.0);
 
         let detail_state = self.clone();
         let detail_commands = commands.clone();

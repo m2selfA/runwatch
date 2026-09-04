@@ -352,6 +352,7 @@ State | Name | Runner | Host | Handle | Observation | Updated/Elapsed | Continua
 - 当前 Attempt 的 scheduler JobID / local handle 是次级句柄，不取代 Run identity；
 - 默认排序优先 `attention -> active -> recent terminal`，而不是单纯数据库插入顺序；
 - 快速过滤至少有 `Active / Attention / All`，搜索覆盖 name、run_id、job handle、host 和 workspace。
+- Dashboard 数据行是**单行信息带**：虚拟表文本格统一限制为一行，空间不足时裁切而不是换行。`Updated` 保留较稳定的可读宽度；Name/Handle/Observation/Continuation 再长也不能把一条 Run 撑成两行。
 
 ### Run detail
 
@@ -436,7 +437,7 @@ Service 页面把当前散落在 tray menu 的运行维护信息集中起来：
 
 关闭 resident runtime 不等于取消科研 Run，但会停止本机 observation/continuation，若存在 live Runs 必须在确认框中明确说明这一影响。
 
-GUI 登录自启动与 daemon resident service 继续保持两个独立设置：`Start GUI with Windows` 仅控制 UI，`Keep runwatchd running` 才控制 Task Scheduler/supervisor service。Task Scheduler XML 在已验证的 Windows 环境中必须写成 UTF-16LE + BOM；canonicalized Win32 verbatim paths还必须在进入 scheduler/cmd 前规范化成普通 DOS/UNC 路径。发布门禁不仅做 create/query-XML/delete，还必须真实启动 supervisor、强杀 child 验证秒级恢复、强杀 supervisor 验证下一次 reconcile 恢复，并确认 Job Object 没有留下孤儿 child。
+GUI 登录自启动与 daemon resident service 继续保持两个独立设置：`Start GUI with Windows` 仅控制 UI，`Keep runwatchd running` 才控制 Task Scheduler/supervisor service。Task Scheduler XML 在已验证的 Windows 环境中必须写成 UTF-16LE + BOM；canonicalized Win32 verbatim paths还必须在进入 scheduler/cmd 前规范化成普通 DOS/UNC 路径。Task registration 还必须显式给当前用户 SID、`SYSTEM` 与 `Administrators` 管理权限，避免“提升权限安装、普通桌面 GUI 无权管理”的 split-token 陷阱。删除 resident runtime 时先 Disable registration 封住 PT1M/Logon 新触发，再 End/等待已验证 owner 退出并 Delete；中途失败则 best-effort 重新 Enable，不能留下静默 disabled 的半状态。发布门禁不仅做 create/query-XML/delete，还必须真实启动 supervisor、强杀 child 验证秒级恢复、强杀 supervisor 验证下一次 reconcile 恢复，并确认 Job Object 没有留下孤儿 child。
 
 ### GUI 数据与 IPC 设计
 
@@ -485,9 +486,9 @@ The first Human Run Console implementation now follows the architecture above. `
 
 `probe_run` is intentionally daemon-owned. It selects one Run for execution observation through the same engine/HostPool path as ordinary ticks; the GUI never creates an SSH connection. Existing daemon terminal-Delivery reconciliation still runs as canonical maintenance and is not a GUI-owned scheduler loop.
 
-The implemented dashboard keeps execution and observation independent, adds continuation/cancel attention, and supports Active/Attention/All filtering, search and explicit Priority/Newest/Name/Host ordering on a virtual table. Detail tabs keep Logs and Event history bounded (logs <=500 lines per request, recent events <=200) and localize partial failures. Continuation projection deliberately omits session files, origin-leaf IDs, adapter paths and lease/owner internals.
+The implemented dashboard keeps execution and observation independent, adds continuation/cancel attention, and supports Active/Attention/All filtering, search and explicit Priority/Newest/Name/Host ordering on a virtual table. Its text cells are capped at one rendered line (`cell_lines(1)`), and the Runs table/detail workspace now share vertical space through flex rather than a fixed 280px table height, so the default 1080×720 window keeps both the row band and detail content usable. Detail tabs keep Logs and Event history bounded (logs <=500 lines per request, recent events <=200) and localize partial failures. Continuation projection deliberately omits session files, origin-leaf IDs, adapter paths and lease/owner internals.
 
-Service authority is also kept separate from Settings: resident Task Scheduler/supervisor control belongs on Service and requires confirmation before disabling; Settings contains only desktop UX choices. Hosts remains a read-only OpenSSH projection plus live Run usage computed from daemon snapshots; merely opening the page does not connect to every Host.
+Service authority is also kept separate from Settings: resident Task Scheduler/supervisor control belongs on Service and requires confirmation before disabling; Settings contains only desktop UX choices. The installed Task carries an explicit current-user/SYSTEM/Administrators security descriptor so a normal limited desktop GUI can manage a Task even when installation happened from an elevated process. Removal first quiesces the registration before stopping/deleting the supervisor and rolls back Enable on failure, closing the one-minute trigger resurrection race. Hosts remains a read-only OpenSSH projection plus live Run usage computed from daemon snapshots; merely opening the page does not connect to every Host.
 
 One concrete WindUI 0.14 limitation is now proven rather than hypothetical: its public tray API does not expose a runtime tray handle/tooltip mutation surface, and native `notify()` is available only inside tray callback context, not from the background controller/app-channel `EventCtx`. Therefore R13 does **not** duplicate a second tray icon or discover private Win32 handles merely to implement a dynamic tooltip/background native notification. Transition attention is currently represented by the dashboard plus in-app toasts; a clean upstream/public tray-notification bridge is the remaining R13d UI-framework item.
 
@@ -500,6 +501,7 @@ Independent review additionally tightened two asynchronous/error boundaries befo
 R13 GUI 改造至少需要以下门禁：
 
 - 0 / 1 / 50 / 500 Runs 的 projection 与列表排序/filter/search 测试；
+- 默认 1080×720 下每个 dashboard Run 行的所有文本列必须保持单行；超长 Updated/Continuation/Observation 等只能裁切，不能换行污染相邻行；
 - Running + unreachable 必须显示“仍 Running，但 observation unhealthy”，不能降成 Unknown；
 - 同时多个 terminal transition 不丢通知；
 - daemon offline / reconnect / paused 的 dashboard 与 tray 状态一致；
@@ -508,6 +510,7 @@ R13 GUI 改造至少需要以下门禁：
 - needs_rebind 只显示 attention/instruction，GUI 无法直接伪造 rebind；
 - Hosts parse 失败显式可见，不静默变空；
 - Window hide/show、tray、GUI/service autostart 仍保持现有语义；
+- Windows packaged interactive acceptance 必须在普通用户桌面会话里验证 Service disable/re-enable、跨 PT1M 不复活、Run drill-in/log/probe/cancel 与 WM_CLOSE hide；Task 若由 elevated 安装，普通用户仍必须具有管理该 registration 的权限；
 - 所有 GUI 启动/操作路径继续保证 Windows 无 console flash；
 - Windows CI 除 Rust test/package 外增加关键 GUI fixture 的 off-screen screenshot smoke，至少覆盖 Runs dashboard、Run detail、daemon offline 三种状态。
 

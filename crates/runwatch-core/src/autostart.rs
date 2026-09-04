@@ -91,7 +91,8 @@ pub fn install_daemon(exe: &Path, interval_sec: u64) -> Result<()> {
         bail!("runwatch executable is not a file: {}", exe.display());
     }
     let user = current_user_identity()?;
-    let xml = daemon_task_xml(&exe, &user, interval_sec)?;
+    let user_sid = current_user_sid()?;
+    let xml = daemon_task_xml(&exe, &user, &user_sid, interval_sec)?;
     let dir = ensure_data_dir()?;
     let xml_path = dir.join(format!(".runwatchd-task-{}.xml", std::process::id()));
     write_task_xml(&xml_path, &xml)?;
@@ -118,33 +119,66 @@ pub fn remove_daemon() -> Result<bool> {
         return Ok(false);
     }
 
-    let end = schtasks(&["/End", "/TN", DAEMON_TASK_NAME])?;
-    if end.status.success() {
-        let naturally_stopped = wait_for_resident_runtime_stopped(
-            std::time::Duration::from_millis(500),
+    // Quiesce the registration before stopping the resident runtime. The task has a PT1M
+    // repetition trigger, so `/End` followed by a bounded stop wait leaves a real window in
+    // which Task Scheduler can otherwise start the old supervisor again before `/Delete`.
+    // Disabling first closes that race while preserving the registration until the verified
+    // runtime has released its ownership locks.
+    require_schtasks(
+        schtasks(&["/Change", "/TN", DAEMON_TASK_NAME, "/Disable"])?,
+        "quiesce runwatchd Task Scheduler task before removal",
+    )?;
+
+    let remove_result = (|| -> Result<()> {
+        let end = schtasks(&["/End", "/TN", DAEMON_TASK_NAME])?;
+        if end.status.success() {
+            let naturally_stopped = wait_for_resident_runtime_stopped(
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_millis(100),
+            )?;
+            if !naturally_stopped && crate::supervisor::owner_lock_held()? {
+                terminate_task_owned_supervisor()?;
+            }
+        } else if resident_runtime_owner_held()? {
+            require_schtasks(end, "stop runwatchd Task Scheduler task")?;
+        }
+
+        let stopped = wait_for_resident_runtime_stopped(
+            std::time::Duration::from_secs(DAEMON_STOP_TIMEOUT_SEC),
             std::time::Duration::from_millis(100),
         )?;
-        if !naturally_stopped && crate::supervisor::owner_lock_held()? {
-            terminate_task_owned_supervisor()?;
+        if !stopped {
+            bail!(
+                "runwatchd resident runtime is still active after {DAEMON_STOP_TIMEOUT_SEC}s; refusing to remove the Task Scheduler registration while the old package may still be in use"
+            );
         }
-    } else if resident_runtime_owner_held()? {
-        require_schtasks(end, "stop runwatchd Task Scheduler task")?;
+
+        require_schtasks(
+            schtasks(&["/Delete", "/TN", DAEMON_TASK_NAME, "/F"])?,
+            "remove runwatchd Task Scheduler task",
+        )?;
+        Ok(())
+    })();
+
+    if let Err(error) = remove_result {
+        let rollback = schtasks(&["/Change", "/TN", DAEMON_TASK_NAME, "/Enable"]);
+        match rollback {
+            Ok(output) if output.status.success() => return Err(error),
+            Ok(output) => {
+                bail!(
+                    "{error:#}; additionally failed to re-enable runwatchd Task Scheduler registration after removal failure: stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Err(rollback_error) => {
+                bail!(
+                    "{error:#}; additionally failed to invoke rollback while re-enabling runwatchd Task Scheduler registration: {rollback_error:#}"
+                );
+            }
+        }
     }
 
-    let stopped = wait_for_resident_runtime_stopped(
-        std::time::Duration::from_secs(DAEMON_STOP_TIMEOUT_SEC),
-        std::time::Duration::from_millis(100),
-    )?;
-    if !stopped {
-        bail!(
-            "runwatchd resident runtime is still active after {DAEMON_STOP_TIMEOUT_SEC}s; refusing to remove the Task Scheduler registration while the old package may still be in use"
-        );
-    }
-
-    require_schtasks(
-        schtasks(&["/Delete", "/TN", DAEMON_TASK_NAME, "/F"])?,
-        "remove runwatchd Task Scheduler task",
-    )?;
     Ok(true)
 }
 
@@ -254,6 +288,72 @@ fn current_user_identity() -> Result<String> {
     })
 }
 
+#[cfg(windows)]
+fn current_user_sid() -> Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("open current process token");
+    }
+
+    let result = (|| -> Result<String> {
+        let mut bytes = 0u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut bytes);
+        }
+        if bytes == 0 {
+            return Err(std::io::Error::last_os_error()).context("size current token user");
+        }
+
+        let mut buffer = vec![0u8; bytes as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                &mut bytes,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error()).context("read current token user");
+        }
+
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let mut sid_text = std::ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("format current user SID");
+        }
+        if sid_text.is_null() {
+            bail!("format current user SID returned a null string")
+        }
+
+        let mut len = 0usize;
+        unsafe {
+            while *sid_text.add(len) != 0 {
+                len += 1;
+            }
+        }
+        let sid = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, len)) };
+        unsafe {
+            LocalFree(sid_text.cast());
+        }
+        if sid.trim().is_empty() {
+            bail!("current user SID is empty")
+        }
+        Ok(sid)
+    })();
+
+    unsafe {
+        CloseHandle(token);
+    }
+    result
+}
+
 #[cfg(test)]
 fn decode_task_output(bytes: &[u8]) -> String {
     let looks_utf16le =
@@ -281,7 +381,7 @@ pub(crate) fn task_scheduler_path(path: &Path) -> String {
     value.into_owned()
 }
 
-fn daemon_task_xml(exe: &Path, user: &str, interval_sec: u64) -> Result<String> {
+fn daemon_task_xml(exe: &Path, user: &str, user_sid: &str, interval_sec: u64) -> Result<String> {
     if !(1..=3600).contains(&interval_sec) {
         bail!("daemon interval must be between 1 and 3600 seconds")
     }
@@ -290,12 +390,14 @@ fn daemon_task_xml(exe: &Path, user: &str, interval_sec: u64) -> Result<String> 
         .context("runwatch executable has no parent directory")?;
     let exe_text = task_scheduler_path(exe);
     let working_dir_text = task_scheduler_path(working_dir);
+    let security_descriptor = format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user_sid})");
     let start_boundary = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Durable runwatch daemon for long-running scientific computations.</Description>
+    <SecurityDescriptor>{security_descriptor}</SecurityDescriptor>
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>
@@ -345,6 +447,7 @@ fn daemon_task_xml(exe: &Path, user: &str, interval_sec: u64) -> Result<String> 
         user = xml_escape(user),
         exe = xml_escape(&exe_text),
         working_dir = xml_escape(&working_dir_text),
+        security_descriptor = xml_escape(&security_descriptor),
         start_boundary = xml_escape(&start_boundary),
     ))
 }
@@ -376,12 +479,16 @@ mod tests {
         let xml = daemon_task_xml(
             Path::new("C:/Tools/A&B/runwatch.exe"),
             "LAB\\user&name",
+            "S-1-5-21-1-2-3-1001",
             DEFAULT_DAEMON_INTERVAL_SEC,
         )
         .unwrap();
         assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
         assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+        assert!(xml.contains(
+            "<SecurityDescriptor>D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-21-1-2-3-1001)</SecurityDescriptor>"
+        ));
         assert!(xml.contains("<TimeTrigger>"));
         assert!(xml.contains("<Repetition>"));
         assert!(xml.contains("<Interval>PT1M</Interval>"));
@@ -395,8 +502,8 @@ mod tests {
 
     #[test]
     fn daemon_task_xml_rejects_unbounded_poll_interval() {
-        assert!(daemon_task_xml(Path::new("C:/runwatch.exe"), "user", 0).is_err());
-        assert!(daemon_task_xml(Path::new("C:/runwatch.exe"), "user", 3601).is_err());
+        assert!(daemon_task_xml(Path::new("C:/runwatch.exe"), "user", "S-1-5-21-1", 0).is_err());
+        assert!(daemon_task_xml(Path::new("C:/runwatch.exe"), "user", "S-1-5-21-1", 3601).is_err());
     }
 
     #[test]
@@ -444,7 +551,9 @@ mod tests {
 
         let exe = std::env::current_exe().expect("current test executable");
         let user = current_user_identity().expect("current user identity");
-        let xml = daemon_task_xml(&exe, &user, DEFAULT_DAEMON_INTERVAL_SEC).expect("task xml");
+        let user_sid = current_user_sid().expect("current user SID");
+        let xml =
+            daemon_task_xml(&exe, &user, &user_sid, DEFAULT_DAEMON_INTERVAL_SEC).expect("task xml");
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -661,7 +770,8 @@ mod tests {
         )
         .canonicalize()
         .expect("resolve COMSPEC");
-        let mut xml = daemon_task_xml(&comspec, &user, 300).expect("R8c task xml");
+        let user_sid = current_user_sid().expect("current user SID");
+        let mut xml = daemon_task_xml(&comspec, &user, &user_sid, 300).expect("R8c task xml");
         let old_args = "<Arguments>supervise --interval 300</Arguments>";
         let wrapper_args = format!(r#"/d /c "{}""#, wrapper.display());
         let new_args = format!("<Arguments>{}</Arguments>", xml_escape(&wrapper_args));
