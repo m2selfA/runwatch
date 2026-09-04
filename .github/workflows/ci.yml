@@ -48,7 +48,7 @@ jobs:
         run: cargo check --all-targets
       - name: Run tests
         run: cargo test --all-targets
-      - name: Parse R17 endurance driver
+      - name: Validate R17 endurance driver
         shell: pwsh
         run: |
           $tokens = $null
@@ -58,6 +58,8 @@ jobs:
             $errors | ForEach-Object { Write-Host ("$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber) $($_.Message)") }
             throw "R17 endurance driver has $($errors.Count) PowerShell parse error(s)"
           }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/acceptance/r17_retry_endurance.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "R17 endurance driver self-test exited $LASTEXITCODE" }
       - name: Render critical GUI fixtures
         shell: pwsh
         run: |

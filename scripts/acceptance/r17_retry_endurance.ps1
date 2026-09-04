@@ -11,7 +11,8 @@ param(
     [int]$MinRounds = 10,
     [switch]$Resume,
     [switch]$Status,
-    [switch]$PlanOnly
+    [switch]$PlanOnly,
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version 2.0
@@ -78,10 +79,10 @@ function Assert-Ssh([string]$Command, [string]$Label) {
 }
 
 function Format-SlurmTime([int]$Seconds) {
-    $seconds = [Math]::Max(60, $Seconds)
-    $hours = [Math]::Floor($seconds / 3600)
-    $minutes = [Math]::Floor(($seconds % 3600) / 60)
-    $remaining = $seconds % 60
+    $seconds = [int][Math]::Max(60, $Seconds)
+    $hours = [int][Math]::Floor($seconds / 3600)
+    $minutes = [int][Math]::Floor(($seconds % 3600) / 60)
+    $remaining = [int]($seconds % 60)
     return "{0:D2}:{1:D2}:{2:D2}" -f $hours, $minutes, $remaining
 }
 
@@ -453,6 +454,19 @@ if ($SlurmHost.Contains("`r") -or $SlurmHost.Contains("`n") -or $RemoteRoot.Cont
     throw "Slurm host/remote root contract is invalid"
 }
 $RemoteRoot = $RemoteRoot.TrimEnd('/')
+
+if ($SelfTest) {
+    if ((Format-SlurmTime 1) -ne "00:01:00") { throw "Slurm time minimum self-test failed" }
+    if ((Format-SlurmTime 200) -ne "00:03:20") { throw "Slurm time 200s self-test failed" }
+    if ((Format-SlurmTime 3661) -ne "01:01:01") { throw "Slurm time 3661s self-test failed" }
+    $doubleQuote = [char]34
+    $expectedQuote = "'a'" + $doubleQuote + "'" + $doubleQuote + "'b'"
+    if ((Quote-Sh "a'b") -ne $expectedQuote) { throw "shell quote self-test failed" }
+    $head = Invoke-Git @("rev-parse", "HEAD")
+    if ($head -notmatch '^[0-9a-f]{40}$') { throw "git identity self-test failed: $head" }
+    Write-Host "R17_ENDURANCE_SELFTEST_OK head=$head driver_sha256=$(Get-Sha256 $DriverPath)"
+    exit 0
+}
 
 if ([string]::IsNullOrWhiteSpace($AuthorityId)) {
     if ($Resume -or $Status) { throw "-AuthorityId is required with -Resume or -Status" }
