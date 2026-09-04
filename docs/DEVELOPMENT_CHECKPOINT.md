@@ -51,6 +51,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R9 | Second-adapter architecture experiment with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed; retained as reference evidence** |
 | R10 | Codex onboarding experiment | **frozen after R10b on 2026-09-02 — status/install/remove/doctor remain validated reference code; R10c and further Codex productization are deferred until after runwatch + pi-runs v1** |
 | R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
+| R12 | Post-v0.1 portability CI + GUI polish | **in progress 2026-09-04 — Windows/Linux CI foundation + GUI console-child fix landed locally; remote Actions verification pending** |
 
 ## R0 completion record
 
@@ -665,6 +666,34 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 - [x] Real disposable Task Scheduler acceptance proved the Windows edge: `/End` alone had `natural_release=false`; verified supervisor PID **87260** was then terminated, its Job Object removed the serve child, and `runtime_released=true`. The unique task was deleted and evidence was preserved at `C:\\Users\\inter\\AppData\\Local\\Temp\\runwatch-r8c-28472-1788353950682680400`. The earlier intentionally stricter gate failed first and exposed this exact `/End` child-survival behavior instead of hiding it behind cleanup.
 - [x] Upgrade/uninstall docs now require old-package stop before binary replacement, whole sibling-directory replacement, reinstall/readiness verification, GUI closeout, and explicit preservation of `%USERPROFILE%\\.runwatch` state. Service stop is not Run cancellation; remote scheduler jobs and breakaway Local Process workloads remain durable across the maintenance gap.
 - [x] Release identity is consistent: `git diff --name-only f6b75b8..HEAD` contains only `docs/DEVELOPMENT_CHECKPOINT.md` and `docs/V1_RELEASE_CANDIDATE.md`, so current HEAD has no runtime-code drift from the packaged/verified `f6b75b8` source tree. R11d/R11e are closed; the next operation is coordinated tag/release-note preparation, not feature development.
+
+### R12 — post-v0.1 portability CI + GUI polish — 2026-09-04
+
+#### R12a — Windows + glibc 2.17 Linux GitHub CI foundation — completed locally 2026-09-04
+
+- [x] Confirmed both GitHub remotes before development: `runwatch -> https://github.com/m2selfA/runwatch.git` and `pi-runs -> https://github.com/m2selfA/pi-runs.git`; both local branches initially reported `main...origin/main` with no ahead/behind marker.
+- [x] Split CI into an explicit Windows x86_64 job and Linux x86_64 compatibility job. Windows runs formatting/check/tests, builds the existing Rust-native three-sibling ZIP with `xtask`, verifies it, then uploads the verified archive.
+- [x] Linux deliberately does **not** use a CentOS-7-era image as the Actions job container, avoiding the separate modern JavaScript-Action/Node glibc-runtime problem. Checkout/artifact actions run on the hosted Ubuntu runner; compilation runs inside `quay.io/pypa/manylinux2014_x86_64`, whose ABI baseline is glibc 2.17.
+- [x] The Linux job hard-fails unless `getconf GNU_LIBC_VERSION` reports exactly `glibc 2.17`, builds/tests the non-GUI workspace there, and uploads `runwatch` + `runwatch-mcp` only. The WindUI tray remains Windows-only rather than being disguised as a Linux deliverable.
+- [x] Added `scripts/ci/check-glibc-floor.sh`: it inspects ELF version-need metadata with `readelf`, derives the maximum required `GLIBC_*` symbol version for every shipped Linux binary and rejects anything newer than 2.17. This is an artifact-level ABI gate in addition to the old build environment.
+- [ ] GitHub-hosted workflow execution is still to be observed after this development commit is pushed; local Rust validation and the GUI fix are completed first, then the remote Actions result is part of R12 closeout.
+
+#### R12b — Windows GUI child-console suppression — completed locally 2026-09-04
+
+- [x] Audited the GUI startup path rather than changing the already-correct PE subsystem. `runwatch-gui/src/main.rs` already uses `#![windows_subsystem = "windows"]`; its direct IPC poll loop does not spawn console children, and the Task Scheduler / taskkill / supervisor/offline-worker child paths already use `CREATE_NO_WINDOW` where needed.
+- [x] Found the actual flash source in `runwatch-ssh::parse_ssh_config()`: GUI startup calls `host_summary()`, which resolves every declared Host through `ssh -G`. `ssh.exe` is a console executable, so launching it from the console-less GUI without Windows creation flags allocates a transient black console for each alias.
+- [x] Centralized OpenSSH config probing through `openssh_command()`. On Windows it applies `CREATE_NO_WINDOW`; on other platforms it is unchanged. The existing `.output()` capture remains intact, so exit status/stdout/stderr and CLI error diagnostics are preserved rather than silenced.
+- [x] No GUI-specific SSH implementation or second host database was added; the fix stays in the shared `runwatch-ssh` OpenSSH-effective-config boundary used by GUI/daemon/CLI.
+
+#### R12 local validation before first push
+
+- [x] `cargo fmt -- --check` passed.
+- [x] `cargo check --all-targets` passed; only the existing `russh v0.54.5` future-incompatibility warning remains.
+- [x] `cargo test --all-targets` passed **106 tests / 0 failed / 8 ignored**.
+- [x] A fresh local Windows release package built from the R12 worktree and verified successfully with Rust `xtask`: `runwatch-v0.1.0-windows-x86_64.zip`, **9,687,221 bytes**, SHA-256 `268f5c0aca12e4f14c0cd1058cf2f75161e000edbb2b441d2c41d2c319d10d3b`, manifest files=5, `ok=true`.
+- [x] The GLIBC gate script is syntax-checked locally with Bash; an initial portability issue in its `[[ =~ ]]` expression was caught before push and replaced with a `grep -E` validation that is compatible with the available Bash as well as the manylinux container.
+- [ ] cap00 does not expose Docker in this development runner, so the actual `manylinux2014_x86_64` build/ELF compatibility gate is intentionally not claimed as a local pass. The pushed GitHub-hosted Linux job is the first authoritative execution of that container path.
+
 
 ## Known transitional debt
 

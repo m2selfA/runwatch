@@ -88,6 +88,8 @@ cargo check --all-targets
 cargo test --all-targets
 ```
 
+GitHub CI keeps the Windows and Linux compatibility contracts separate. Windows builds/tests the complete workspace and verifies the three-binary `xtask` ZIP. Linux builds/tests the non-GUI runtime (`runwatch` + `runwatch-mcp`) inside the `manylinux2014_x86_64` baseline and then inspects ELF version requirements with `readelf`; CI fails if either binary requires a `GLIBC_*` symbol newer than **2.17**. The Linux CI artifact is currently a binary artifact, not yet the formal three-sibling release package; `runwatch-gui` remains Windows-only.
+
 Build and verify the portable Windows package with the Rust-native release tool:
 
 ```text

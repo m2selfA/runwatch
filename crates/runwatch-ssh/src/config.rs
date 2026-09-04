@@ -74,6 +74,21 @@ fn ssh_g_args(alias: &str) -> Vec<OsString> {
     ssh_g_args_from(alias, std::env::var_os("RUNWATCH_SSH_CONFIG"))
 }
 
+fn openssh_command() -> Command {
+    let mut command = Command::new("ssh");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // `runwatch-gui` is a Windows-subsystem process with no parent console.
+        // Without this flag every `ssh -G` config probe allocates a transient
+        // console window. stdout/stderr are still captured by `output()`, so
+        // CLI diagnostics remain fully available through the returned error.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
     let declared = parse_ssh_config_at(&ssh_config_path())?;
     declared
@@ -90,7 +105,7 @@ pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
 }
 
 pub(crate) fn resolve_effective_host(alias: &str) -> Result<SshHost> {
-    let output = Command::new("ssh")
+    let output = openssh_command()
         .args(ssh_g_args(alias))
         .output()
         .with_context(|| format!("run `ssh -G {alias}`"))?;
