@@ -51,7 +51,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R9 | Second-adapter architecture experiment with Codex CLI | **completed 2026-09-01 — exact-thread MCP binding, durable submit, offline exact-thread resume, rollout idempotency and real provider acceptance passed; retained as reference evidence** |
 | R10 | Codex onboarding experiment | **frozen after R10b on 2026-09-02 — status/install/remove/doctor remain validated reference code; R10c and further Codex productization are deferred until after runwatch + pi-runs v1** |
 | R11 | Pi-first v1 production closure | **completed 2026-09-03 — release/distribution, real-Pi acceptance, formal endurance, compatibility retirement and final RC replay all green** |
-| R12 | Post-v0.1 portability CI + GUI polish | **in progress 2026-09-04 — Windows/Linux CI foundation + GUI console-child fix landed locally; remote Actions verification pending** |
+| R12 | Post-v0.1 portability CI + GUI polish | **completed 2026-09-04 — Windows package CI + Linux glibc 2.17 artifact gate green; GUI `ssh -G` console flashing fixed** |
 
 ## R0 completion record
 
@@ -669,16 +669,16 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 
 ### R12 — post-v0.1 portability CI + GUI polish — 2026-09-04
 
-#### R12a — Windows + glibc 2.17 Linux GitHub CI foundation — completed locally 2026-09-04
+#### R12a — Windows + glibc 2.17 Linux GitHub CI foundation — completed 2026-09-04
 
 - [x] Confirmed both GitHub remotes before development: `runwatch -> https://github.com/m2selfA/runwatch.git` and `pi-runs -> https://github.com/m2selfA/pi-runs.git`; both local branches initially reported `main...origin/main` with no ahead/behind marker.
 - [x] Split CI into an explicit Windows x86_64 job and Linux x86_64 compatibility job. Windows runs formatting/check/tests, builds the existing Rust-native three-sibling ZIP with `xtask`, verifies it, then uploads the verified archive.
 - [x] Linux deliberately does **not** use a CentOS-7-era image as the Actions job container, avoiding the separate modern JavaScript-Action/Node glibc-runtime problem. Checkout/artifact actions run on the hosted Ubuntu runner; compilation runs inside `quay.io/pypa/manylinux2014_x86_64`, whose ABI baseline is glibc 2.17.
 - [x] The Linux job hard-fails unless `getconf GNU_LIBC_VERSION` reports exactly `glibc 2.17`, builds/tests the non-GUI workspace there, and uploads `runwatch` + `runwatch-mcp` only. The WindUI tray remains Windows-only rather than being disguised as a Linux deliverable.
 - [x] Added `scripts/ci/check-glibc-floor.sh`: it inspects ELF version-need metadata with `readelf`, derives the maximum required `GLIBC_*` symbol version for every shipped Linux binary and rejects anything newer than 2.17. This is an artifact-level ABI gate in addition to the old build environment.
-- [ ] GitHub-hosted workflow execution is still to be observed after this development commit is pushed; local Rust validation and the GUI fix are completed first, then the remote Actions result is part of R12 closeout.
+- [x] GitHub-hosted execution is release-gated, not merely syntactically present. Final code run `33831576928` at commit `d8137add82e88ef0169320272ef3d44e9c70445e` completed **Windows success + Linux success** after the fresh-runner issues below were corrected.
 
-#### R12b — Windows GUI child-console suppression — completed locally 2026-09-04
+#### R12b — Windows GUI child-console suppression — completed 2026-09-04
 
 - [x] Audited the GUI startup path rather than changing the already-correct PE subsystem. `runwatch-gui/src/main.rs` already uses `#![windows_subsystem = "windows"]`; its direct IPC poll loop does not spawn console children, and the Task Scheduler / taskkill / supervisor/offline-worker child paths already use `CREATE_NO_WINDOW` where needed.
 - [x] Found the actual flash source in `runwatch-ssh::parse_ssh_config()`: GUI startup calls `host_summary()`, which resolves every declared Host through `ssh -G`. `ssh.exe` is a console executable, so launching it from the console-less GUI without Windows creation flags allocates a transient black console for each alias.
@@ -692,12 +692,16 @@ The Pi-first product path is release-qualified. The code remains frozen through 
 - [x] `cargo test --all-targets` passed **106 tests / 0 failed / 8 ignored**.
 - [x] A fresh local Windows release package built from the R12 worktree and verified successfully with Rust `xtask`: `runwatch-v0.1.0-windows-x86_64.zip`, **9,687,221 bytes**, SHA-256 `268f5c0aca12e4f14c0cd1058cf2f75161e000edbb2b441d2c41d2c319d10d3b`, manifest files=5, `ok=true`.
 - [x] The GLIBC gate script is syntax-checked locally with Bash; an initial portability issue in its `[[ =~ ]]` expression was caught before push and replaced with a `grep -E` validation that is compatible with the available Bash as well as the manylinux container.
-- [ ] cap00 does not expose Docker in this development runner, so the actual `manylinux2014_x86_64` build/ELF compatibility gate is intentionally not claimed as a local pass. The pushed GitHub-hosted Linux job is the first authoritative execution of that container path.
+- [x] cap00 does not expose Docker in this development runner, so no local manylinux result was fabricated. GitHub run `33831576928` is the authoritative container execution: `manylinux2014_x86_64` reported exactly `glibc 2.17`, stable Rust 1.98.1 built/tested the non-GUI workspace, and both release ELFs passed the post-build `readelf` gate. Actual maximum requirements are **GLIBC_2.16 for `runwatch`** and **GLIBC_2.16 for `runwatch-mcp`**, both below the required 2.17 ceiling.
 - [x] First pushed CI run `33830650469` was parsed and scheduled correctly. Its Windows job reached `cargo check` and exposed a fresh-runner prerequisite that cap00 already had installed: `aws-lc-sys 0.44.0` requires NASM for the normal x86_64 Windows build and GitHub `windows-2022` did not provide `nasm.exe` on PATH. The job failed closed before tests/package rather than silently changing crypto build features.
 - [x] CI now installs and verifies NASM explicitly with Chocolatey before the Rust build. We intentionally did not set `AWS_LC_SYS_NO_ASM=1`; GitHub now exercises the same default-feature build shape as the formal Windows package.
 - [x] Second pushed CI run `33830869221` proved Chocolatey installed NASM 3.2.0 successfully but also exposed a same-step environment detail: installers update the persistent PATH, not the already-running PowerShell process. The workflow now verifies the package's canonical `$env:ProgramFiles\NASM\nasm.exe`, appends that directory to `GITHUB_PATH` for later steps, prepends it to the current process PATH, and invokes the exact executable before Cargo. This keeps the prerequisite explicit instead of depending on `refreshenv` shell magic.
 - [x] Third pushed CI run `33831029981` cleared the Windows native-prerequisite step. Its Linux job proved the intended container contract before failing: `manylinux2014_x86_64` reported exactly `glibc 2.17`, installed and ran stable Rust 1.98.1, and completed `cargo check --workspace --all-targets --exclude runwatch-gui`. The failure was a repository test-platform bug, not an ABI/build failure: `local_process::tests::wrapper_protocol_has_started_arm_and_atomic_terminal_boundaries` unconditionally called the deliberately Windows-only Local Process planner and unwrapped its expected Linux error.
 - [x] The Local Process wrapper-protocol test is now correctly `#[cfg(windows)]`, matching the production support boundary already enforced by `LocalPlan::build`. The shared OpenSSH helper was also shaped with platform-specific return blocks so the GUI `CREATE_NO_WINDOW` fix adds no Linux `unused_mut` warning.
+- [x] Final Windows job in run `33831576928` passed Rust 1.98.1 formatting/check/tests, installed and verified NASM 3.02, built the complete optimized three-sibling package, and `xtask verify` returned `ok=true`, files=5. Inner archive: `runwatch-v0.1.0-windows-x86_64.zip`, **9,636,093 bytes**, SHA-256 `6a86f9d4df460b774393fef32a6baf8dff6fbb90aa5aeaa5ae324e4212496b47`. GitHub artifact ID **9922071547**, uploaded-artifact size **9,626,276 bytes**, artifact digest `sha256:19950aad3758132453a8358b55ccc6a23efd45280fb781b505f857db7ffa0899`.
+- [x] Final Linux job in the same run passed check/tests/release build inside the glibc-2.17 image, then passed the artifact-level GLIBC version-need gate and upload. GitHub artifact ID **9921932844**, name `runwatch-linux-x86_64-glibc217-d8137add82e88ef0169320272ef3d44e9c70445e`, size **6,101,005 bytes**, digest `sha256:9362ac2c030c98f8e8ff7987bafc894240423ec21ee7b09b205e601a8950ff01`; it contains only `runwatch` and `runwatch-mcp` as intended.
+- [x] The same final Windows build compiled `runwatch-gui` with the shared `runwatch-ssh` fix, so the console-flash correction is present in the remotely verified release package rather than only in a local debug binary.
+- [x] R12 is closed without changing the historical v0.1.0 release evidence: this phase adds post-release CI/portability and GUI polish while preserving runwatch's agent-neutral lifecycle authority.
 
 
 ## Known transitional debt
