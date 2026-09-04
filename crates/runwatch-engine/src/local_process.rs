@@ -669,6 +669,7 @@ mod tests {
         assert_eq!(String::from_utf16(&words).unwrap(), "Write-Output 'ok'");
     }
 
+    #[cfg(windows)]
     #[test]
     fn wrapper_protocol_has_started_arm_and_atomic_terminal_boundaries() {
         let spec = SubmitRunSpec {

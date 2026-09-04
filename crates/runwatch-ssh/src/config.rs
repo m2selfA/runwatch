@@ -75,7 +75,6 @@ fn ssh_g_args(alias: &str) -> Vec<OsString> {
 }
 
 fn openssh_command() -> Command {
-    let mut command = Command::new("ssh");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -84,9 +83,14 @@ fn openssh_command() -> Command {
         // Without this flag every `ssh -G` config probe allocates a transient
         // console window. stdout/stderr are still captured by `output()`, so
         // CLI diagnostics remain fully available through the returned error.
+        let mut command = Command::new("ssh");
         command.creation_flags(CREATE_NO_WINDOW);
+        command
     }
-    command
+    #[cfg(not(windows))]
+    {
+        Command::new("ssh")
+    }
 }
 
 pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
