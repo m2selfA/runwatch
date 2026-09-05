@@ -86,7 +86,7 @@ jobs:
               $image.Dispose()
             }
           }
-          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'retry', 'hosts')) {
+          foreach ($fixture in @('dashboard', 'detail', 'offline', 'new-run', 'retry', 'hosts', 'settings')) {
             Render-Fixture $fixture 1080 720 $fixture
           }
           # A successful PNG alone is not enough for the tall scheduler form: the

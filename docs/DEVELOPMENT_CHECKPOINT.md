@@ -57,6 +57,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R15 | GUI layout polish: single-line Run headers + responsive Host cards | **completed 2026-09-04 — 1080×720 Continuation header is single-line; Hosts use equal-size longest-content cards and responsive columns; fresh GitHub CI #33857831526 passed 127 tests, seven viewport fixture cases, Windows package and Linux glibc 2.17 gates** |
 | R16 | v0.2.0 release closure | **completed 2026-09-04 — packaged Limited-desktop Process/Slurm/LSF acceptance, v0.1.0→v0.2.0 active-Run upgrade preservation, fresh CI, annotated `v0.2.0` tag and GitHub Release all closed** |
 | R17 | Durable Multi-Attempt Lifecycle & Human Retry | **completed 2026-09-05 — immutable Attempt history, idempotent Human Retry, real Process/Slurm/LSF retry, fail-closed agent identity, crash/ambiguous-return recovery and the final 7223.155 s / 12-round writer-endurance authority are all green** |
+| R18 | Desktop Attention & Notification UX | **in progress 2026-09-05 — GUI-only projection work: WindUI 0.15 uplift, dynamic tray state, notification policy/coalescing, disposable GUI-local preferences and packaged hidden-GUI acceptance; daemon durable state remains frozen** |
 
 ## R0 completion record
 
@@ -944,3 +945,44 @@ The formal R17 writer-endurance harness is now tracked as `scripts/acceptance/r1
 The post-fix replacement authority `r17-writer-596323c-20260904` was also deliberately rejected as final evidence after its driver disappeared while `segment-003` was still active. It had **3608.854 s / 6 committed rounds / 2 clean segments**; the harness subsequently marked `segment-003` dirty and permanently non-resumable. Its already-launched r001-r009 Local/Slurm Runs were all terminal when audited, but neither the partial third segment nor any seconds from that authority were carried into the final qualification.
 
 Final R17 writer authority **`r17-final-596323c-20260905`** qualified on 2026-09-05 from clean committed tree `596323ce750aaee488446854e72fe48a93fa4a5b`, frozen runtime SHA-256 `43ea337fee60162052160adbebb47396ef9338e09eb5d7091cbef1420ab64327`, and frozen endurance-driver SHA-256 `5653e74254396a978f466151fdbc859fe46ba20d6046dcf2c138b63539a90b33`. Four clean segments accumulated **7223.155 s / 12 rounds / 0 dirty segments**. A final state audit found **0 bad rounds**: every round used resident Session 2, kept exactly two Attempts per Run, preserved Attempt-1 logs, passed same-request replay, and recorded exactly one Local plus one Slurm Attempt-2 scientific execution. Slurm Attempt-2 JobIDs were **31888, 31890, 31892, 31894, 31896, 31898, 31900, 31902, 31904, 31906, 31908, 31910**. The authority exited `qualified=true`; post-qualification cleanup found **0** `Runwatch-R17-Endurance-*` tasks, **0** frozen-runtime processes and **0** queued/running R17 Slurm jobs. Together with fresh CI **#33886142213** and the **133 passed / 0 failed / 10 ignored** post-fix full-suite gate, this closes R17.
+
+## R18 current work
+
+### R18 — Desktop Attention & Notification UX — in progress 2026-09-05
+
+Frozen authority boundary:
+
+- R18 is a **GUI-only projection/UX block**. It must not add Run/Attempt/Delivery authority, must not change the daemon SQLite schema, and must not move notification state into `runwatchd`.
+- No private Win32 tray-handle discovery, no second tray icon, and no framework migration merely to close notification UX.
+- No `last_seen_event` / missed-event catch-up in the first R18 release. Existing startup semantics remain: the first dashboard snapshot seeds transition state and historical terminal Runs are not replayed as fresh completions.
+- No WinRT/AUMID/Notification-Center activation protocol in R18. The native-notification target is the existing WindUI/platform tray notification path; richer actionable Windows notifications are a separate future product block.
+- Native notification payloads are privacy-minimized. Run name may be user-configurable, but command/workspace/SSH details/environment/continuation identity never belong in an OS popup.
+
+#### R18a — WindUI 0.15 compatibility uplift
+
+- [x] Upgraded `runwatch-gui` from WindUI 0.14.0 to crates.io **0.15.0** as an isolated compatibility step. The lockfile changed only the WindUI package entry; no GUI source compatibility edits were required for the uplift itself.
+- [x] The pure uplift passed `cargo check --all-targets`, the then-current **133 passed / 0 failed / 10 ignored** full workspace suite, and the complete pre-R18 Windows fixture matrix including the existing New Run/Retry footer-pixel gates before any new tray API was used.
+
+#### R18b — dynamic tray projection
+
+- [x] Added a pure `TraySummary` projection from the canonical `DashboardSnapshot`; tray code does not maintain a second active/attention counter. Regression covers idle, active, attention, paused and daemon-unavailable projections.
+- [x] Wired WindUI 0.15 `App::tray_handle()` / `TrayHandle::set_tooltip()` on the UI thread. Snapshot refreshes update the existing tray to bounded summaries such as `runwatch · 3 active · 1 attention`; daemon disconnect switches it to `runwatch · daemon unavailable`.
+- [x] Kept the tray as a quick status/return surface. No scheduler controls, second tray icon, private HWND discovery or duplicate lifecycle state were added.
+
+#### R18c — notification policy, coalescing and GUI-local preferences
+
+- [x] Specified and regression-tested background transition policy separately from ordinary GUI action-result toasts. Only terminal/attention transitions are eligible for the native channel; submit/retry/probe/settings results remain in-app only.
+- [x] Added a pure coalescing policy that produces at most one native intent per refresh, with attention priority and bounded/privacy-minimized single-Run payloads. The production renderer remains deliberately framework-gated until R18d's public API is consumable.
+- [x] Added versioned GUI-only `gui-settings.json` preferences for native notifications, success notifications, attention notifications and optional Run-name disclosure. Missing settings use defaults; corrupt/read/future-version failures fail soft to defaults plus a Settings warning and never affect Run/Delivery truth. Because crates.io WindUI 0.15.0 lacks runtime notify, native delivery defaults off and all four native controls are visibly disabled rather than pretending to work.
+- [x] Added deterministic `settings` screenshot fixture and Windows CI coverage. Final local R18a-c regression is **139 passed / 0 failed / 10 ignored**; the seven 1080×720 fixtures plus Hosts 760×720/1440×900 all pass, with final Settings fixture **50,573 bytes**.
+
+#### R18d — clean public runtime native-notification bridge
+
+- [ ] Use a public WindUI runtime tray-notification API if available. WindUI 0.15 already provides the runtime `TrayHandle`/`TrayOp` seam for tooltip mutation but currently exposes `notify()` only through tray callbacks; do not work around that with private OS handles.
+- [x] Upstream runtime notify is not present in WindUI 0.15.0 or current upstream `main`, so the minimal public extension was implemented and validated in an isolated WindUI checkout: `TrayOp::Notify`, `TrayHandle::notify`, and the existing Win32/macOS consumers. WindUI's own library suite passed **746 / 0**. Contribution commit `8b9743aaac641ee980c7b687cb7e0621c1c0fca5` is published on a contribution-only fork and upstream PR **huanfeng/wind-ui-rust#13** is open. runwatch itself remains on crates.io 0.15.0 and does **not** consume a private fork; background native delivery stays fail-closed until a public upstream revision/release is suitable.
+
+#### R18e — Windows packaged acceptance
+
+- [ ] From an ordinary Limited interactive Windows session, run the packaged GUI hidden to tray and prove dynamic tooltip plus transition notification behavior against canonical daemon state.
+- [ ] Prove notification preferences persist across GUI restart, disabling native notifications does not suppress dashboard truth, and deleting the GUI settings file merely restores defaults.
+- [ ] Close with fresh Windows CI/package evidence. A new multi-hour writer endurance is not required because R18 must not modify daemon durable writer semantics.

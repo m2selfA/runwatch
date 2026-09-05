@@ -496,6 +496,16 @@ Screenshot fixtures are a debug/CI surface only (`debug_assertions`). Release bu
 
 Independent review additionally tightened two asynchronous/error boundaries before 0.2.0 packaging: detail requests carry a generation and the controller aborts superseded loads, so slower A/B selections or older log-tail requests cannot overwrite the current detail; and Attempt/Timeline/Continuation read/parse failures render explicit local `unavailable` states rather than masquerading as absent canonical data. Because R13 changes runtime IPC plus the shipped GUI materially, current workspace/package identity is 0.2.0 while the historical v0.1.0 tag/evidence remains untouched.
 
+### R18 Desktop Attention & Notification UX（2026-09-05）
+
+R18 keeps the durable authority boundary unchanged: notification/tray state is a disposable desktop projection over canonical daemon snapshots, never a new lifecycle database. WindUI 0.15 removes the old dynamic-tooltip blocker by exposing `App::tray_handle()` and runtime `TrayHandle::set_tooltip()` through a queued `TrayOp` seam. `runwatch-gui` should therefore derive one bounded tray summary from `DashboardSnapshot` and update the existing tray icon rather than discovering private Win32 handles or creating a second icon.
+
+Native background notifications are intentionally narrower than in-app toasts. Terminal Run transitions and newly-entered attention may become OS notifications; manual submit/retry/probe/settings action results remain local to the open Console. Multiple transitions from one dashboard refresh are coalesced into at most one native popup, with attention taking priority. Native payloads are privacy-minimized and never include command, workspace, SSH details, environment or continuation identity.
+
+Desktop notification preferences belong in a versioned GUI-local settings file and are fail-soft: missing/corrupt settings restore defaults and may warn in Settings, but cannot affect Run, Attempt, Observation or Delivery state. R18 deliberately does not add a `last_seen_event` cursor or offline missed-notification replay; the first snapshot after GUI start continues to seed transition tracking without replaying historical terminal Runs.
+
+WindUI 0.15 still exposes native `notify()` only from tray callback context, while its public runtime tray handle currently queues only tooltip mutation. The correct extension point is therefore the framework's existing `TrayHandle`/`TrayOp` runtime seam (conceptually `TrayHandle::notify -> TrayOp::Notify`), not a runwatch-local Win32 handle hack. R18 may consume an upstream public release or exact upstream revision carrying that minimal bridge, but must not create a long-lived private WindUI fork or expand into WinRT/AUMID actionable Notification Center integration.
+
 ### R14 manual Run submission note（2026-09-04）
 
 Once the R13 console was stable, manual Run authoring became the next safe writable surface because it can reuse an authority that already exists instead of inventing new lifecycle semantics. The desktop GUI now builds a normal `SubmitRunSpec` and calls daemon `submit_run_v2`; it never submits directly to SSH/schedulers and never writes SQLite. This path supports the daemon's existing `Process`, `Slurm` and `Lsf` runners only.

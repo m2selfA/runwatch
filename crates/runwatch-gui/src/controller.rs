@@ -1,6 +1,7 @@
 use crate::ipc_client;
 use crate::model::{DashboardSnapshot, HostCardView, RunDetailView, project_dashboard};
 use crate::notifications::{Notice, NoticeKind, TransitionTracker};
+use crate::settings::{self, GuiSettings};
 use chrono::Utc;
 use runwatch_core::{RetryRunSpec, SubmitRunSpec, autostart};
 use tokio::sync::mpsc;
@@ -23,6 +24,7 @@ pub enum Command {
     Retry(RetryRunSpec),
     SetDaemonAutostart(bool),
     SetGuiAutostart(bool),
+    SaveGuiSettings(GuiSettings),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,7 @@ pub enum UiEvent {
         gui_enabled: bool,
         notice: Notice,
     },
+    GuiSettingsSaveResult(Result<(), String>),
     Notice(Notice),
 }
 
@@ -208,6 +211,14 @@ pub fn start(ui: Sender<UiEvent>) -> mpsc::UnboundedSender<Command> {
                                 }
                                 Command::SetGuiAutostart(enabled) => {
                                     spawn_autostart_change(ui.clone(), AutostartTarget::Gui, enabled);
+                                }
+                                Command::SaveGuiSettings(settings) => {
+                                    let ui_settings = ui.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        let result = settings::save(settings)
+                                            .map_err(|error| format!("{error:#}"));
+                                        let _ = ui_settings.send(UiEvent::GuiSettingsSaveResult(result));
+                                    });
                                 }
                             }
                         }

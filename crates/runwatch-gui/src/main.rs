@@ -7,10 +7,12 @@ mod icon;
 mod ipc_client;
 mod model;
 mod notifications;
+mod settings;
 mod submission;
 mod views;
 
 use controller::{Command, UiEvent};
+use model::TraySummary;
 use notifications::{Notice, NoticeKind};
 use runwatch_core::autostart;
 use views::hosts::HostsViewState;
@@ -20,6 +22,7 @@ use windui::prelude::*;
 
 fn main() {
     let gui_autostart_on = signal(autostart::gui_is_enabled());
+    let gui_settings = settings::GuiSettingsState::new(settings::load());
     let daemon_autostart_on = signal(autostart::daemon_is_enabled());
     let pause_ui = signal(false);
     let service_text = signal("Connecting to runwatchd...".to_string());
@@ -41,12 +44,15 @@ fn main() {
             resize_hosts_state.set_viewport_width(ctx.bounds().w);
         }
     });
+    let tray_handle = app.tray_handle();
 
     let ui_tx = app.channel::<UiEvent>({
         let runs_state = runs_state.clone();
         let hosts_state = hosts_state.clone();
+        let tray_handle = tray_handle.clone();
         move |ctx, event| match event {
             UiEvent::Snapshot { snapshot, notices } => {
+                tray_handle.set_tooltip(TraySummary::from_dashboard(&snapshot).tooltip);
                 pause_ui.set(snapshot.paused);
                 service_text.set(format!(
                     "runwatchd {}\nprotocol: {} · capabilities: {}\npid: {}\npolling: {}\nresident service: {}\nGUI autostart: {}\n{}",
@@ -74,6 +80,7 @@ fn main() {
                 }
             }
             UiEvent::DaemonUnavailable(error) => {
+                tray_handle.set_tooltip(TraySummary::daemon_unavailable().tooltip);
                 service_text.set(format!(
                     "runwatchd unavailable\n{error}\n\nThe GUI will not take over scheduler polling."
                 ));
@@ -140,6 +147,20 @@ fn main() {
                 gui_autostart_on.set(gui_enabled);
                 show_notice(ctx, notice);
             }
+            UiEvent::GuiSettingsSaveResult(result) => match result {
+                Ok(()) => gui_settings.warning.set(String::new()),
+                Err(error) => {
+                    gui_settings.warning.set(error.clone());
+                    show_notice(
+                        ctx,
+                        Notice {
+                            kind: NoticeKind::Attention,
+                            title: "Could not save desktop settings".into(),
+                            body: error,
+                        },
+                    );
+                }
+            },
             UiEvent::Notice(notice) => show_notice(ctx, notice),
         }
     });
@@ -147,10 +168,18 @@ fn main() {
     #[cfg(debug_assertions)]
     let commands = if let Ok(name) = std::env::var("RUNWATCH_GUI_FIXTURE") {
         let fixture = fixtures::named(&name).unwrap_or_else(|| {
-            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, new-run, retry, or hosts")
+            panic!("unknown RUNWATCH_GUI_FIXTURE={name}; expected dashboard, detail, offline, new-run, retry, hosts, or settings")
         });
         pause_ui.set(fixture.snapshot.paused);
         selected_tab.set(fixture.selected_tab);
+        let defaults = settings::GuiSettings::default();
+        gui_settings
+            .native_notifications
+            .set(defaults.native_notifications);
+        gui_settings.notify_success.set(defaults.notify_success);
+        gui_settings.notify_attention.set(defaults.notify_attention);
+        gui_settings.include_run_name.set(defaults.include_run_name);
+        gui_settings.warning.set(String::new());
         service_text.set(fixture.service);
         hosts_state.apply_hosts(Ok(fixture.hosts));
         hosts_state.apply_run_usage(&fixture.snapshot.rows);
@@ -195,7 +224,7 @@ fn main() {
             ),
             (
                 "Settings",
-                views::settings_page(gui_autostart_on, commands.clone()),
+                views::settings_page(gui_autostart_on, gui_settings, commands.clone()),
             ),
         ],
     );

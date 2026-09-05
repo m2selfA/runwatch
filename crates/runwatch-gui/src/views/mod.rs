@@ -2,6 +2,8 @@ pub mod hosts;
 pub mod runs;
 
 use crate::controller::Command;
+use crate::settings::GuiSettingsState;
+use crate::settings::NATIVE_NOTIFICATION_AVAILABLE;
 use tokio::sync::mpsc;
 use windui::prelude::*;
 
@@ -119,9 +121,19 @@ pub fn service_page(
 
 pub fn settings_page(
     gui_autostart: Signal<bool>,
+    notification_settings: GuiSettingsState,
     commands: mpsc::UnboundedSender<Command>,
 ) -> Element {
     let gui_commands = commands.clone();
+    let native_commands = commands.clone();
+    let success_commands = commands.clone();
+    let attention_commands = commands.clone();
+    let privacy_commands = commands.clone();
+    let native_state = notification_settings;
+    let success_state = notification_settings;
+    let attention_state = notification_settings;
+    let privacy_state = notification_settings;
+    let warning_visible = notification_settings.warning;
     Element::col()
         .fill()
         .padding(18)
@@ -167,12 +179,88 @@ pub fn settings_page(
         .child(
             Element::card(
                 "Notifications & display",
-                Element::label(
-                    "Transition notification state is disposable GUI UX state; durable Run and Delivery truth never depends on it.",
-                )
-                .font_size(12.0)
-                .fg(Color::hex(0x5B6B75))
-                .width_match(),
+                Element::col()
+                    .width_match()
+                    .spacing(8)
+                    .child(
+                        Element::checkbox(
+                            "Native Windows notifications",
+                            notification_settings.native_notifications,
+                        )
+                        .enabled(NATIVE_NOTIFICATION_AVAILABLE)
+                        .on_click(move |_| {
+                            native_state
+                                .native_notifications
+                                .set(!native_state.native_notifications.get());
+                            let _ = native_commands
+                                .send(Command::SaveGuiSettings(native_state.snapshot()));
+                        }),
+                    )
+                    .child(
+                        Element::checkbox(
+                            "Successful Run completions",
+                            notification_settings.notify_success,
+                        )
+                        .enabled(NATIVE_NOTIFICATION_AVAILABLE)
+                        .on_click(move |_| {
+                            success_state
+                                .notify_success
+                                .set(!success_state.notify_success.get());
+                            let _ = success_commands
+                                .send(Command::SaveGuiSettings(success_state.snapshot()));
+                        }),
+                    )
+                    .child(
+                        Element::checkbox(
+                            "Run attention alerts",
+                            notification_settings.notify_attention,
+                        )
+                        .enabled(NATIVE_NOTIFICATION_AVAILABLE)
+                        .on_click(move |_| {
+                            attention_state
+                                .notify_attention
+                                .set(!attention_state.notify_attention.get());
+                            let _ = attention_commands
+                                .send(Command::SaveGuiSettings(attention_state.snapshot()));
+                        }),
+                    )
+                    .child(
+                        Element::checkbox(
+                            "Include Run name in OS notifications",
+                            notification_settings.include_run_name,
+                        )
+                        .enabled(NATIVE_NOTIFICATION_AVAILABLE)
+                        .on_click(move |_| {
+                            privacy_state
+                                .include_run_name
+                                .set(!privacy_state.include_run_name.get());
+                            let _ = privacy_commands
+                                .send(Command::SaveGuiSettings(privacy_state.snapshot()));
+                        }),
+                    )
+                    .child(
+                        Element::label(
+                            "Native background notifications are waiting for the public WindUI runtime-notification bridge (upstream PR #13). The controls stay disabled until that API is released; in-app transition toasts remain active.",
+                        )
+                        .font_size(12.0)
+                        .fg(Color::hex(0xB27A1B))
+                        .width_match(),
+                    )
+                    .child(
+                        Element::label(
+                            "Only terminal/attention transitions may leave the app. Submit, retry, probe and settings results remain in-app toasts. Commands, workspaces, SSH details and continuation identity are never included in OS notifications.",
+                        )
+                        .font_size(12.0)
+                        .fg(Color::hex(0x5B6B75))
+                        .width_match(),
+                    )
+                    .child(
+                        Element::label_signal(notification_settings.warning)
+                            .font_size(12.0)
+                            .fg(Color::hex(0xB27A1B))
+                            .width_match()
+                            .visible_when(move || !warning_visible.get().is_empty()),
+                    ),
             )
             .width_match(),
         )

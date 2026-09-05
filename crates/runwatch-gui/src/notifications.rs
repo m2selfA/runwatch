@@ -1,4 +1,6 @@
 use crate::model::{RunRow, status_label};
+#[cfg(test)]
+use crate::settings::GuiSettings;
 use runwatch_core::RunStatus;
 use std::collections::HashMap;
 
@@ -13,6 +15,75 @@ pub struct Notice {
     pub kind: NoticeKind,
     pub title: String,
     pub body: String,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeNotice {
+    pub kind: NoticeKind,
+    pub title: String,
+    pub body: String,
+}
+
+#[cfg(test)]
+pub fn coalesce_native(notices: &[Notice], settings: &GuiSettings) -> Option<NativeNotice> {
+    if !settings.native_notifications {
+        return None;
+    }
+    let eligible: Vec<&Notice> = notices
+        .iter()
+        .filter(|notice| match notice.kind {
+            NoticeKind::Success => settings.notify_success,
+            NoticeKind::Attention => settings.notify_attention,
+        })
+        .collect();
+    if eligible.is_empty() {
+        return None;
+    }
+    if eligible.len() == 1 {
+        let notice = eligible[0];
+        return Some(NativeNotice {
+            kind: notice.kind,
+            title: if settings.include_run_name {
+                bounded_text(&notice.title, 80)
+            } else {
+                "runwatch".to_string()
+            },
+            body: match notice.kind {
+                NoticeKind::Success => "Run completed successfully".to_string(),
+                NoticeKind::Attention => bounded_text(&notice.body, 160),
+            },
+        });
+    }
+    let attention = eligible
+        .iter()
+        .filter(|notice| notice.kind == NoticeKind::Attention)
+        .count();
+    let success = eligible.len() - attention;
+    let body = match (attention, success) {
+        (0, success) => format!("{success} runs completed"),
+        (attention, 0) => format!("{attention} runs need attention"),
+        (attention, success) => format!("{attention} need attention · {success} completed"),
+    };
+    Some(NativeNotice {
+        kind: if attention > 0 {
+            NoticeKind::Attention
+        } else {
+            NoticeKind::Success
+        },
+        title: "runwatch".to_string(),
+        body,
+    })
+}
+
+#[cfg(test)]
+fn bounded_text(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    format!("{}…", value.chars().take(keep).collect::<String>())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -161,6 +232,59 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn native_policy_coalesces_one_refresh_and_prioritizes_attention() {
+        let settings = GuiSettings {
+            native_notifications: true,
+            ..GuiSettings::default()
+        };
+        let notices = vec![
+            Notice {
+                kind: NoticeKind::Success,
+                title: "done-a".into(),
+                body: "running -> succeeded".into(),
+            },
+            Notice {
+                kind: NoticeKind::Success,
+                title: "done-b".into(),
+                body: "running -> succeeded".into(),
+            },
+            Notice {
+                kind: NoticeKind::Attention,
+                title: "failed-c".into(),
+                body: "running -> failed".into(),
+            },
+        ];
+        let native = coalesce_native(&notices, &settings).unwrap();
+        assert_eq!(native.kind, NoticeKind::Attention);
+        assert_eq!(native.title, "runwatch");
+        assert_eq!(native.body, "1 need attention · 2 completed");
+    }
+
+    #[test]
+    fn native_policy_respects_categories_and_run_name_privacy() {
+        let notice = Notice {
+            kind: NoticeKind::Success,
+            title: "private-run-name".into(),
+            body: "running -> succeeded".into(),
+        };
+        let mut settings = GuiSettings {
+            native_notifications: true,
+            ..GuiSettings::default()
+        };
+        settings.include_run_name = false;
+        let native = coalesce_native(std::slice::from_ref(&notice), &settings).unwrap();
+        assert_eq!(native.title, "runwatch");
+        assert_eq!(native.body, "Run completed successfully");
+        assert!(!native.body.contains("private-run-name"));
+
+        settings.notify_success = false;
+        assert!(coalesce_native(std::slice::from_ref(&notice), &settings).is_none());
+        settings.native_notifications = false;
+        settings.notify_success = true;
+        assert!(coalesce_native(std::slice::from_ref(&notice), &settings).is_none());
     }
 
     #[test]

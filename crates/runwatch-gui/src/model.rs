@@ -120,6 +120,38 @@ pub struct DashboardSnapshot {
     pub total: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraySummary {
+    pub tooltip: String,
+}
+
+impl TraySummary {
+    pub fn from_dashboard(snapshot: &DashboardSnapshot) -> Self {
+        let mut parts = vec!["runwatch".to_string()];
+        if snapshot.paused {
+            parts.push("paused".to_string());
+        }
+        if snapshot.active > 0 {
+            parts.push(format!("{} active", snapshot.active));
+        }
+        if snapshot.attention > 0 {
+            parts.push(format!("{} attention", snapshot.attention));
+        }
+        if parts.len() == 1 {
+            parts.push("idle".to_string());
+        }
+        Self {
+            tooltip: parts.join(" · "),
+        }
+    }
+
+    pub fn daemon_unavailable() -> Self {
+        Self {
+            tooltip: "runwatch · daemon unavailable".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RunDetailView {
     pub run_id: String,
@@ -779,6 +811,48 @@ mod tests {
             continuations,
             now,
         )
+    }
+
+    #[test]
+    fn tray_summary_is_a_bounded_projection_of_dashboard_state() {
+        let now = Utc::now();
+        let idle = dashboard(vec![], vec![], vec![], now);
+        assert_eq!(
+            TraySummary::from_dashboard(&idle).tooltip,
+            "runwatch · idle"
+        );
+
+        let active = dashboard(
+            vec![
+                run("a", RunStatus::Running, now),
+                run("b", RunStatus::Queued, now),
+                run("c", RunStatus::Submitting, now),
+            ],
+            vec![],
+            vec![],
+            now,
+        );
+        assert_eq!(
+            TraySummary::from_dashboard(&active).tooltip,
+            "runwatch · 3 active"
+        );
+
+        let mut attention = active.clone();
+        attention.attention = 1;
+        assert_eq!(
+            TraySummary::from_dashboard(&attention).tooltip,
+            "runwatch · 3 active · 1 attention"
+        );
+
+        attention.paused = true;
+        assert_eq!(
+            TraySummary::from_dashboard(&attention).tooltip,
+            "runwatch · paused · 3 active · 1 attention"
+        );
+        assert_eq!(
+            TraySummary::daemon_unavailable().tooltip,
+            "runwatch · daemon unavailable"
+        );
     }
 
     #[test]

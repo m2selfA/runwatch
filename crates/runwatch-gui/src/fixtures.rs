@@ -21,6 +21,7 @@ pub fn named(name: &str) -> Option<GuiFixture> {
         "new-run" => Some(build(false, false, true, 0)),
         "retry" => Some(retry_fixture()),
         "hosts" => Some(build(false, false, false, 1)),
+        "settings" => Some(build(false, false, false, 3)),
         _ => None,
     }
 }

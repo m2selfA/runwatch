@@ -3315,9 +3315,9 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "windui"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a94fc934d190c0fe9814e75ea57e59df193df0694d8ad2e36d3fd4af1a07cc72"
+checksum = "9a3666bfb5df4d3c7556b5c341a08baf015aa55b88825af3e7850058e57ae604"
 dependencies = [
  "embed-resource",
  "objc2",
