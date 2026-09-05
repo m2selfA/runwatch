@@ -2,7 +2,7 @@
 
 Release date: 2026-09-05
 
-Publication status: **release candidate; GitHub Release pending final fresh-runner qualification**.
+Publication status: **fresh-runner qualified; annotated tag and GitHub Release publication pending**.
 
 ## Overview
 
@@ -71,7 +71,7 @@ The release keeps the existing hard gates:
 
 Pre-CI local candidate: `runwatch-v0.3.0-windows-x86_64.zip`, **10,479,597 bytes**, SHA-256 `fc8cff6e80ea45b590866720287a0845a009ea87c26025ed86d00db46398c64f`; independent `xtask verify` reports `ok=true`, files=5, version `0.3.0`, platform `windows-x86_64`.
 
-Final v0.3.0 fresh-runner artifact IDs, hashes and tag/release identity will be recorded after the version-bump commit passes CI.
+Fresh-runner qualification: implementation/release-document commit `bf86eaa191971eeb513b9b6acbe7daac2d66da4d` passed GitHub Actions **#33949072262**. Windows passed formatting, workspace check, **140 passed / 0 failed / 10 ignored**, R17 endurance-driver validation, critical GUI fixtures, optimized packaging, package verification and upload; Linux passed the glibc-2.17 baseline build/test/release + upload gate. Windows artifact **9964382254** is 10,419,230 bytes with outer digest `sha256:5f2a6ea768741c92ed21cd3591b58e02f029b122ce1f668ff1d3fb6801fa9108`. Its independently downloaded authoritative inner `runwatch-v0.3.0-windows-x86_64.zip` is **10,429,395 bytes**, SHA-256 `cfbc3f3b16876e2da3a7096e3f8d7c5b7f55bb248ab073f2abbab0a268e5688f`, and independently re-verifies `ok=true`, files=5, version `0.3.0`, platform `windows-x86_64`. Linux artifact **9964275232** is 6,206,678 bytes with digest `sha256:d40942b82152d43049e8d13a0a784b9705e79dee72d1d835bf87c4c5eebdec7c`. Final annotated-tag / GitHub-Release identity is recorded after publication.
 
 ## Known non-blocking debt
 
