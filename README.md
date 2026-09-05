@@ -7,7 +7,7 @@ Windows-first **Durable Run Lifecycle Authority** for long scientific computatio
 
 The v0.1.0 release is Pi-first: `runwatch` is the durable authority, `pi-runs` is the Pi integration plane, and `pi-ssh-tools` is the online remote workspace plane. See [installation](docs/INSTALL.md) and the [v1 release contract](docs/V1_RELEASE_CANDIDATE.md) before deploying it.
 
-Current `main` is **0.2.0**. It preserves the same durable-authority architecture while upgrading the Windows GUI into a Human Run Console with a virtualized/searchable Run dashboard, Observation and continuation attention, lazy Overview/Logs/Artifacts/Timeline/Continuation detail, daemon-owned single-Run probe/cancel controls, SSH Host projection, and resident-service diagnostics. The historical `v0.1.0` tag and qualification evidence remain unchanged.
+Current `main` is **0.3.0**. It preserves the same durable-authority architecture while adding durable multi-Attempt history and idempotent Human Retry for unbound Failed/Cancelled Runs, plus the Windows Human Run Console, dynamic tray status and GUI-local notification/display preferences. `runwatchd` remains the sole canonical lifecycle writer. Controller-originated native OS notifications remain fail-closed until WindUI exposes the required public runtime notification bridge.
 
 - 痛点：[docs/pain-points.md](docs/pain-points.md)
 - 设计：[docs/design.md](docs/design.md)
@@ -30,7 +30,7 @@ The legacy importer is one-way/read-only: it is considered only when the canonic
 
 ## Current release scope
 
-The first production release, `v0.1.0`, is intentionally **Pi-first**: `pi-runs` is the Pi Agent Integration Plane and `pi-ssh-tools` is the Pi-online remote workspace plane. That durable Pi + runwatch + Slurm/Local Process path is release-qualified. Current 0.2.0 work extends the human desktop control/observation surface without moving Run, scheduler, SSH lifecycle, or continuation authority into the GUI. New coding-agent integrations remain outside this GUI work.
+The first production release, `v0.1.0`, is intentionally **Pi-first**: `pi-runs` is the Pi Agent Integration Plane and `pi-ssh-tools` is the Pi-online remote workspace plane. That durable Pi + runwatch + Slurm/Local Process path remains release-qualified. v0.3.0 extends runwatch with durable multi-Attempt Human Retry and richer desktop attention UX without moving Run, scheduler, SSH lifecycle, continuation or retry authority into the GUI. New coding-agent integrations remain outside this release scope.
 
 Remote Slurm/LSF `workspace.cwd` is part of the durability contract: it must be a persistent filesystem visible at the same path from the SSH login node and scheduler compute nodes. runwatch places its attempt script, stdout/stderr, terminal sentinel and receipt under `<workspace>/.runwatch/<run_id>/`; node-local `/tmp` or scratch is therefore unsupported unless the cluster explicitly makes that path shared.
 
@@ -41,7 +41,7 @@ cargo build -p runwatch-cli --release
 cargo build -p runwatch-gui --release
 ```
 
-The GUI is `#![windows_subsystem = "windows"]`, embeds `assets/icon.ico`, hides to the tray on close and can install a Startup-folder shortcut. In current 0.2.0 `main` it is a pure local-IPC Human Run Console: `runwatchd` remains the only canonical lifecycle owner, while the GUI provides Runs/Hosts/Service/Settings views and bounded detail/action projections. See `docs/DEVELOPMENT_CHECKPOINT.md` for the exact current boundary and remaining tray-notification limitation.
+The GUI is `#![windows_subsystem = "windows"]`, embeds `assets/icon.ico`, hides to the tray on close and can install a Startup-folder shortcut. In current 0.3.0 `main` it is a pure local-IPC Human Run Console: `runwatchd` remains the only canonical lifecycle owner, while the GUI provides Runs/Hosts/Service/Settings views, Attempt history, reviewed Human Retry, bounded detail/action projections and dynamic tray status. See `docs/DEVELOPMENT_CHECKPOINT.md` for the exact current boundary; native background notifications remain framework-gated rather than implemented through private Win32 handles.
 Windows install/upgrade/uninstall semantics are documented in `docs/INSTALL.md`. Resident removal is stop-then-unregister and fails closed if an independent owner remains; it does not cancel durable scientific Runs or remove `%USERPROFILE%\\.runwatch` state.
 
 ```text

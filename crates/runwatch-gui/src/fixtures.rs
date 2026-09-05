@@ -136,7 +136,7 @@ fn build(
         },
     ];
     let snapshot = DashboardSnapshot {
-        daemon_version: "0.2.0-dev".into(),
+        daemon_version: "0.3.0-dev".into(),
         daemon_protocol: 1,
         daemon_capabilities: 24,
         daemon_pid: 4242,
@@ -196,7 +196,7 @@ fn build(
         service: if offline {
             "runwatchd unavailable\nfixture: named pipe unavailable\n\nThe GUI will not take over scheduler polling.".into()
         } else {
-            "runwatchd 0.2.0-dev\nprotocol: 1 · capabilities: 24\npid: 4242\npolling: active\nresident service: enabled\nGUI autostart: enabled\npackage siblings: complete".into()
+            "runwatchd 0.3.0-dev\nprotocol: 1 · capabilities: 24\npid: 4242\npolling: active\nresident service: enabled\nGUI autostart: enabled\npackage siblings: complete".into()
         },
         open_create_dialog,
         open_retry_dialog: false,

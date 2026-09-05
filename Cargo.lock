@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "runwatch-ssh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "glob",
@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",

@@ -58,6 +58,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R16 | v0.2.0 release closure | **completed 2026-09-04 — packaged Limited-desktop Process/Slurm/LSF acceptance, v0.1.0→v0.2.0 active-Run upgrade preservation, fresh CI, annotated `v0.2.0` tag and GitHub Release all closed** |
 | R17 | Durable Multi-Attempt Lifecycle & Human Retry | **completed 2026-09-05 — immutable Attempt history, idempotent Human Retry, real Process/Slurm/LSF retry, fail-closed agent identity, crash/ambiguous-return recovery and the final 7223.155 s / 12-round writer-endurance authority are all green** |
 | R18 | Desktop Attention & Notification UX | **in progress 2026-09-05 — all runwatch-local implementation, packaged desktop, settings and fresh CI gates are green; only the public WindUI runtime-notify bridge (upstream PR #13) and the resulting native-popup acceptance remain. Daemon durable state stays frozen.** |
+| R19 | v0.3.0 release closure | **in progress 2026-09-05 — release-only closure for the R17 durable multi-Attempt/Human Retry runtime plus the already-qualified R18 desktop-attention surface; native background notification remains explicitly framework-gated and is not required for v0.3.0 publication** |
 
 ## R0 completion record
 
@@ -988,3 +989,17 @@ Frozen authority boundary:
 - [x] Closed with fresh final CI/package evidence; no new multi-hour writer endurance is required because R18 does not modify daemon durable writer semantics. Final CI **#33938414191** for current implementation commit `acd6ebd0f5c5e7df9d173fee2734237de277cee2` is fully green: Linux glibc 2.17 passed; Windows passed fmt/check/**140 passed / 0 failed / 10 ignored** tests, the full seven-fixture + Hosts narrow/wide render gate, optimized package, verify and upload. Final Windows artifact **9961141624** has outer digest `sha256:fada250f0f7722045be4172c4b8ce448134542cbb55725faafc4ec047264e803`; its independently downloaded inner `runwatch-v0.2.0-windows-x86_64.zip` is **10,429,049 bytes**, SHA-256 `097bdd5d09a45eac931bce6f8af28bb491a91054d56db9d6d160ede59024f728`, and re-verifies `ok=true` with 5 files / v0.2.0. Final Linux artifact **9961015114** has digest `sha256:14b72941dd1deb50f87663815dd9fa35927b2511c56f19854bb358a1dbdd6ea3`.
 
 **Only remaining R18 closure condition:** upstream PR #13 must land (or an equivalent public WindUI release/revision must expose runtime tray `notify`). At that point runwatch may consume the public upstream API, enable the currently fail-closed native-notification controls, connect the already-tested coalesced `NativeNotice` intent to `TrayHandle::notify`, and run the final Limited-Session packaged native-popup acceptance. No remaining R18 work justifies a private fork, raw Win32 tray handle, second icon, daemon schema change or notification replay cursor.
+
+## R19 current work
+
+### R19 — v0.3.0 release closure — in progress 2026-09-05
+
+R19 is a release-only block. The runtime scope is frozen to the already-qualified R17 implementation plus the runwatch-local R18 implementation present on `main`. R18's upstream WindUI runtime-notify dependency remains an explicit post-v0.3 follow-up and must not be closed by pinning a private fork, discovering private Win32 tray handles, creating a second tray icon, or moving notification state into `runwatchd`.
+
+Release gates:
+
+- [x] Chosen release identity **v0.3.0** because durable multi-Attempt/Human Retry is a substantial new product capability above v0.2.0; v0.2.0 remains immutable.
+- [x] Release scope explicitly includes R17 immutable Attempt history, idempotent daemon-owned Human Retry/recovery and the already-qualified R18 dynamic tray/settings/policy surface. Controller-originated native OS notifications remain fail-closed and are documented as non-blocking framework debt.
+- [x] Bumped workspace/package identity to **0.3.0**, updated README/release documents and GUI fixture version strings, then passed local `cargo fmt -- --check`, `cargo check --all-targets`, `cargo test --all-targets` (**140 passed / 0 failed / 10 ignored**) and optimized Rust-native packaging. Local candidate `runwatch-v0.3.0-windows-x86_64.zip` is **10,479,597 bytes**, SHA-256 `fc8cff6e80ea45b590866720287a0845a009ea87c26025ed86d00db46398c64f`; `xtask verify` reports `ok=true`, files=5, version `0.3.0`, platform `windows-x86_64`. The only compiler note remains the existing `russh 0.54.5` future-incompatibility warning.
+- [ ] Obtain fresh Windows + Linux GitHub CI from the v0.3.0 implementation/release-document commit; independently download and verify the Windows CI ZIP and record artifact identities.
+- [ ] Publish an annotated `v0.3.0` tag and non-draft/non-prerelease GitHub Release using the exact verified fresh-runner Windows ZIP; record final tag/release/asset identities and leave `main` clean.
