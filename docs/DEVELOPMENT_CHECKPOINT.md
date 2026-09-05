@@ -1,6 +1,6 @@
 # runwatch Development Checkpoint
 
-Last updated: 2026-09-04
+Last updated: 2026-09-05
 
 This file is the authoritative implementation checkpoint for the current redesign. **Every completed development phase must update this document before the next phase begins.**
 
@@ -56,7 +56,7 @@ Host aliases remain authoritative in the user's `~/.ssh/config`.
 | R14 | Manual Human Run submission + GUI CI gate | **completed 2026-09-04 — agent-neutral Local Process/Slurm/LSF authoring reuses daemon `submit_run_v2`; isolated gm00 Slurm Job 31834 passed terminal/log acceptance; fresh GitHub CI #33854434483 passed Windows four-fixture rendering/package and Linux glibc 2.17 gates** |
 | R15 | GUI layout polish: single-line Run headers + responsive Host cards | **completed 2026-09-04 — 1080×720 Continuation header is single-line; Hosts use equal-size longest-content cards and responsive columns; fresh GitHub CI #33857831526 passed 127 tests, seven viewport fixture cases, Windows package and Linux glibc 2.17 gates** |
 | R16 | v0.2.0 release closure | **completed 2026-09-04 — packaged Limited-desktop Process/Slurm/LSF acceptance, v0.1.0→v0.2.0 active-Run upgrade preservation, fresh CI, annotated `v0.2.0` tag and GitHub Release all closed** |
-| R17 | Durable Multi-Attempt Lifecycle & Human Retry | **in progress 2026-09-04 — R17a-d and crash/ambiguous-return qualification are green; agent-identity fail-closed audit fixed; a fresh 7200 s writer-endurance authority is still required before completion** |
+| R17 | Durable Multi-Attempt Lifecycle & Human Retry | **completed 2026-09-05 — immutable Attempt history, idempotent Human Retry, real Process/Slurm/LSF retry, fail-closed agent identity, crash/ambiguous-return recovery and the final 7223.155 s / 12-round writer-endurance authority are all green** |
 
 ## R0 completion record
 
@@ -886,9 +886,9 @@ Pi on Windows
 
 This functional loop is now release-qualified from the supported release/install layout and has survived the R11 endurance matrix plus final RC replay. The existing Codex loop remains valuable second-adapter evidence but is **not** part of the v0.1.0 release scope. No human should need to type “continue”.
 
-## R17 current work
+## R17 completion record
 
-### R17 — Durable Multi-Attempt Lifecycle & Human Retry — started 2026-09-04
+### R17 — Durable Multi-Attempt Lifecycle & Human Retry — started 2026-09-04, completed 2026-09-05
 
 R17 begins only after published v0.2.0 is frozen. The release tag stays immutable; all R17 work is post-v0.2 main development. Core contract: one logical Run may own multiple durable Attempts, old Attempt evidence is never overwritten, and retry allocation/submission remains daemon-owned.
 
@@ -927,7 +927,7 @@ R17d focused GUI tests are **24 passed / 0 failed**. Retry review maps only sche
 
 - [x] Crash/restart gates cover retry-intent commit, scheduler/process launch, ambiguous scheduler response, and terminal convergence across real Slurm and Local Process execution.
 - [x] Prove one retry `request_id` -> one Attempt -> at most one scientific execution/JobID/handle across both scheduler and Local Process recovery.
-- [ ] Establish fresh endurance evidence before any production release containing the new Attempt writer.
+- [x] Establish fresh endurance evidence before any production release containing the new Attempt writer.
 
 R17e now includes daemon-owned recovery for durable Retry intents that are still the current `Submitting` Attempt and have no handle. A real gm00 restart gate killed the isolated daemon after Attempt 2 was durably allocated but before any scheduler receipt existed; without client replay, the restarted daemon auto-submitted Job **31842**, converged success, preserved failed Attempt-1 Job **31841** logs, and retained exactly two Attempts / one retry intent / one Attempt-2 scheduler submission. A deterministic real Slurm ambiguous-return integration then submitted Attempt 2 exactly once, left SQLite intentionally at `Submitting / no JobID` after the remote receipt existed, reopened the same store, and replayed the production Retry pipeline: Attempt-1 Job **31845**, Attempt-2 Job **31846**, exactly two Attempts and **one scientific Attempt-2 execution** (`executions=1`). This proves the remote receipt guard survives the scheduler-accepted/local-response-lost crash boundary without a second `sbatch`.
 
@@ -940,3 +940,7 @@ A later fail-closed audit found one reachable inconsistent identity shape before
 The first formal authority `r17-writer-33615f2-20260904` is therefore deliberately **superseded and non-resumable as release evidence**, despite its clean Segment 1 (**1805.337 s / 3 rounds / 0 dirty segments**). Segment 2 was stopped during Round 4 as soon as the audit found the identity gap; its isolated Local Attempt-2 PID **69220** and Slurm Attempt-2 Job **31866** were cancelled through the authority daemon, `squeue` became empty, and the dedicated `Runwatch-R17-Endurance-*` Task was removed. None of those 1805.337 seconds may be carried into the replacement authority. The next formal authority must start from the committed post-fix tree, a newly frozen runtime hash and a clean worktree.
 
 The formal R17 writer-endurance harness is now tracked as `scripts/acceptance/r17_retry_endurance.ps1`. Its frozen qualification contract is **7200 s clean active / >=10 rounds / mixed Local+Slurm**, with every round exercising failed Attempt 1 -> successful Retry Attempt 2, killing the active `serve` daemon child while both retries are active and requiring the resident `runwatch supervise` process to replace it in the same interactive session, same-request replay after restart and after terminal, exactly two Attempts, stable JobID/handle, preserved Attempt-1 logs and one scientific Attempt-2 execution marker per runner. Authority state under ignored `dist/r17-endurance/` freezes git/runtime/driver hashes plus workload parameters; an interrupted or failed segment is permanently dirty/non-resumable. Windows CI validates both the driver AST and its Windows PowerShell 5.1 `-SelfTest`; the real external endurance remains an explicit acceptance gate. No formal authority is credited until it starts from the committed clean R17 tree and frozen release runtime.
+
+The post-fix replacement authority `r17-writer-596323c-20260904` was also deliberately rejected as final evidence after its driver disappeared while `segment-003` was still active. It had **3608.854 s / 6 committed rounds / 2 clean segments**; the harness subsequently marked `segment-003` dirty and permanently non-resumable. Its already-launched r001-r009 Local/Slurm Runs were all terminal when audited, but neither the partial third segment nor any seconds from that authority were carried into the final qualification.
+
+Final R17 writer authority **`r17-final-596323c-20260905`** qualified on 2026-09-05 from clean committed tree `596323ce750aaee488446854e72fe48a93fa4a5b`, frozen runtime SHA-256 `43ea337fee60162052160adbebb47396ef9338e09eb5d7091cbef1420ab64327`, and frozen endurance-driver SHA-256 `5653e74254396a978f466151fdbc859fe46ba20d6046dcf2c138b63539a90b33`. Four clean segments accumulated **7223.155 s / 12 rounds / 0 dirty segments**. A final state audit found **0 bad rounds**: every round used resident Session 2, kept exactly two Attempts per Run, preserved Attempt-1 logs, passed same-request replay, and recorded exactly one Local plus one Slurm Attempt-2 scientific execution. Slurm Attempt-2 JobIDs were **31888, 31890, 31892, 31894, 31896, 31898, 31900, 31902, 31904, 31906, 31908, 31910**. The authority exited `qualified=true`; post-qualification cleanup found **0** `Runwatch-R17-Endurance-*` tasks, **0** frozen-runtime processes and **0** queued/running R17 Slurm jobs. Together with fresh CI **#33886142213** and the **133 passed / 0 failed / 10 ignored** post-fix full-suite gate, this closes R17.
