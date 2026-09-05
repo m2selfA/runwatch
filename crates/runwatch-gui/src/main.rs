@@ -52,7 +52,7 @@ fn main() {
         let tray_handle = tray_handle.clone();
         move |ctx, event| match event {
             UiEvent::Snapshot { snapshot, notices } => {
-                tray_handle.set_tooltip(TraySummary::from_dashboard(&snapshot).tooltip);
+                apply_tray_summary(&tray_handle, TraySummary::from_dashboard(&snapshot));
                 pause_ui.set(snapshot.paused);
                 service_text.set(format!(
                     "runwatchd {}\nprotocol: {} · capabilities: {}\npid: {}\npolling: {}\nresident service: {}\nGUI autostart: {}\n{}",
@@ -80,7 +80,7 @@ fn main() {
                 }
             }
             UiEvent::DaemonUnavailable(error) => {
-                tray_handle.set_tooltip(TraySummary::daemon_unavailable().tooltip);
+                apply_tray_summary(&tray_handle, TraySummary::daemon_unavailable());
                 service_text.set(format!(
                     "runwatchd unavailable\n{error}\n\nThe GUI will not take over scheduler polling."
                 ));
@@ -253,6 +253,33 @@ fn main() {
         .child(tabs.weight(1.0));
 
     app.content(ui).screenshot_from_args().run();
+}
+
+fn apply_tray_summary(tray_handle: &windui::platform::TrayHandle, summary: TraySummary) {
+    tray_handle.set_tooltip(summary.tooltip);
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+    use windui::platform::TrayOp;
+
+    #[test]
+    fn tray_summary_is_queued_through_the_public_runtime_handle() {
+        let handle = windui::platform::TrayHandle::detached();
+        apply_tray_summary(
+            &handle,
+            TraySummary {
+                tooltip: "runwatch · 3 active · 1 attention".into(),
+            },
+        );
+        assert_eq!(
+            handle.pending_ops(),
+            vec![TrayOp::SetTooltip(
+                "runwatch · 3 active · 1 attention".into()
+            )]
+        );
+    }
 }
 
 fn build_tray(
